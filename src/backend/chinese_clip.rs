@@ -12,7 +12,7 @@ use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{RuntimeConfig, SessionPolicy};
 use crate::embedding::Embedding;
 use crate::error::Error;
-use crate::manifest::{CropMode, ImagePreprocessConfig, TextInputConfig};
+use crate::manifest::{ImagePreprocessConfig, TextInputConfig};
 use crate::preprocess::chinese_clip::{
     ClipImagePreprocessConfig, preprocess_image, stack_image_batches,
 };
@@ -78,12 +78,6 @@ impl ChineseClipBackend {
                 ));
             }
         };
-        if image_preprocess.crop != CropMode::Center {
-            return Err(Error::invalid_bundle(
-                "chinese clip currently only supports center crop",
-            ));
-        }
-
         Ok(Self {
             info: bundle.info().clone(),
             normalize_output: bundle.info().normalize_output,

@@ -16,25 +16,30 @@ pub(crate) fn preprocess_image(
     image: &DynamicImage,
     config: &ClipImagePreprocessConfig,
 ) -> Result<ArrayD<f32>, Error> {
-    if config.crop != CropMode::Center {
-        return Err(Error::image_preprocess(
-            "only center crop is supported for clip_image preprocess",
-        ));
-    }
-
     let image = image.to_rgb8();
-    let (width, height) = image.dimensions();
-    let short_edge = width.min(height).max(1);
-    let scale = config.resize_shortest_edge as f32 / short_edge as f32;
-    let resized_width = ((width as f32 * scale).round() as u32).max(config.image_size as u32);
-    let resized_height = ((height as f32 * scale).round() as u32).max(config.image_size as u32);
-    let resized =
-        image::imageops::resize(&image, resized_width, resized_height, FilterType::Triangle);
+    let cropped = match config.crop {
+        CropMode::Center => {
+            let (width, height) = image.dimensions();
+            let short_edge = width.min(height).max(1);
+            let scale = config.resize_shortest_edge as f32 / short_edge as f32;
+            let resized_width = ((width as f32 * scale).round() as u32).max(config.image_size as u32);
+            let resized_height =
+                ((height as f32 * scale).round() as u32).max(config.image_size as u32);
+            let resized =
+                image::imageops::resize(&image, resized_width, resized_height, FilterType::CatmullRom);
 
-    let crop_size = config.image_size as u32;
-    let left = (resized_width - crop_size) / 2;
-    let top = (resized_height - crop_size) / 2;
-    let cropped = image::imageops::crop_imm(&resized, left, top, crop_size, crop_size).to_image();
+            let crop_size = config.image_size as u32;
+            let left = (resized_width - crop_size) / 2;
+            let top = (resized_height - crop_size) / 2;
+            image::imageops::crop_imm(&resized, left, top, crop_size, crop_size).to_image()
+        }
+        CropMode::None => image::imageops::resize(
+            &image,
+            config.image_size as u32,
+            config.image_size as u32,
+            FilterType::CatmullRom,
+        ),
+    };
 
     let plane = config.image_size * config.image_size;
     let mut values = vec![0.0f32; 3 * plane];
@@ -93,6 +98,23 @@ mod tests {
                 image_size: 224,
                 resize_shortest_edge: 224,
                 crop: CropMode::Center,
+                mean: [0.5, 0.5, 0.5],
+                std: [0.5, 0.5, 0.5],
+            },
+        )
+        .unwrap();
+        assert_eq!(tensor.shape(), [1, 3, 224, 224]);
+    }
+
+    #[test]
+    fn preprocesses_clip_image_without_crop() {
+        let image = DynamicImage::ImageRgb8(RgbImage::from_pixel(320, 240, Rgb([128, 64, 32])));
+        let tensor = preprocess_image(
+            &image,
+            &ClipImagePreprocessConfig {
+                image_size: 224,
+                resize_shortest_edge: 224,
+                crop: CropMode::None,
                 mean: [0.5, 0.5, 0.5],
                 std: [0.5, 0.5, 0.5],
             },

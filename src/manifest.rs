@@ -91,6 +91,7 @@ pub(crate) enum ImagePreprocessConfig {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CropMode {
     Center,
+    None,
 }
 
 impl ModelManifest {
@@ -164,7 +165,7 @@ impl ModelManifest {
                 ImagePreprocessConfig::ClipImage {
                     image_size,
                     resize_shortest_edge,
-                    crop,
+                    crop: _,
                     mean,
                     std,
                 },
@@ -177,11 +178,6 @@ impl ModelManifest {
                 if *image_size == 0 || *resize_shortest_edge == 0 {
                     return Err(Error::invalid_bundle(
                         "clip_image sizes must be greater than 0",
-                    ));
-                }
-                if *crop != CropMode::Center {
-                    return Err(Error::invalid_bundle(
-                        "only center crop is supported for clip_image preprocess",
                     ));
                 }
                 if mean.len() != 3 || std.len() != 3 {

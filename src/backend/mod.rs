@@ -7,6 +7,11 @@ use std::time::Instant;
 
 use ndarray::ArrayD;
 use ort::session::{Session, builder::GraphOptimizationLevel as OrtGraphOptimizationLevel};
+use tokenizers::decoders::wordpiece::WordPiece as WordPieceDecoder;
+use tokenizers::models::wordpiece::WordPiece;
+use tokenizers::normalizers::bert::BertNormalizer;
+use tokenizers::pre_tokenizers::bert::BertPreTokenizer;
+use tokenizers::processors::bert::BertProcessing;
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
 use crate::bundle::{ModelBundle, ModelInfo};
@@ -120,9 +125,7 @@ pub(crate) fn load_tokenizer(
     max_len: usize,
     fallback_pad_token: &str,
 ) -> Result<Tokenizer, Error> {
-    let mut tokenizer = Tokenizer::from_file(tokenizer_path)
-        .map_err(Error::from_tokenizer)
-        .map_err(|error| Error::tokenizer(format!("{}: {error}", tokenizer_path.display())))?;
+    let mut tokenizer = load_tokenizer_from_path(tokenizer_path)?;
     tokenizer
         .with_truncation(Some(TruncationParams {
             max_length: max_len,
@@ -130,17 +133,62 @@ pub(crate) fn load_tokenizer(
         }))
         .map_err(Error::from_tokenizer)?;
 
+    let pad_id = tokenizer.token_to_id(fallback_pad_token).unwrap_or(0);
     let mut padding = tokenizer
         .get_padding()
         .cloned()
         .unwrap_or_else(|| PaddingParams {
-            pad_id: 0,
+            pad_id,
             pad_type_id: 0,
             pad_token: fallback_pad_token.to_owned(),
             ..Default::default()
         });
     padding.strategy = PaddingStrategy::Fixed(max_len);
     tokenizer.with_padding(Some(padding));
+    Ok(tokenizer)
+}
+
+fn load_tokenizer_from_path(tokenizer_path: &Path) -> Result<Tokenizer, Error> {
+    if tokenizer_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+    {
+        return build_bert_tokenizer_from_vocab(tokenizer_path);
+    }
+
+    Tokenizer::from_file(tokenizer_path)
+        .map_err(Error::from_tokenizer)
+        .map_err(|error| Error::tokenizer(format!("{}: {error}", tokenizer_path.display())))
+}
+
+fn build_bert_tokenizer_from_vocab(tokenizer_path: &Path) -> Result<Tokenizer, Error> {
+    let tokenizer_path_str = tokenizer_path.to_str().ok_or_else(|| {
+        Error::tokenizer(format!(
+            "tokenizer path is not valid UTF-8: {}",
+            tokenizer_path.display()
+        ))
+    })?;
+    let wordpiece = WordPiece::from_file(tokenizer_path_str)
+        .unk_token("[UNK]".to_owned())
+        .build()
+        .map_err(Error::from_tokenizer)
+        .map_err(|error| Error::tokenizer(format!("{}: {error}", tokenizer_path.display())))?;
+    let mut tokenizer = Tokenizer::new(wordpiece);
+    let sep = tokenizer.token_to_id("[SEP]").ok_or_else(|| {
+        Error::tokenizer(format!("{} is missing [SEP]", tokenizer_path.display()))
+    })?;
+    let cls = tokenizer.token_to_id("[CLS]").ok_or_else(|| {
+        Error::tokenizer(format!("{} is missing [CLS]", tokenizer_path.display()))
+    })?;
+    tokenizer
+        .with_normalizer(Some(BertNormalizer::default()))
+        .with_pre_tokenizer(Some(BertPreTokenizer))
+        .with_decoder(Some(WordPieceDecoder::default()))
+        .with_post_processor(Some(BertProcessing::new(
+            ("[SEP]".to_owned(), sep),
+            ("[CLS]".to_owned(), cls),
+        )));
     Ok(tokenizer)
 }
 
@@ -236,5 +284,32 @@ fn map_graph_optimization_level(level: GraphOptimizationLevel) -> OrtGraphOptimi
         GraphOptimizationLevel::Basic => OrtGraphOptimizationLevel::Level1,
         GraphOptimizationLevel::Extended => OrtGraphOptimizationLevel::Level2,
         GraphOptimizationLevel::All => OrtGraphOptimizationLevel::All,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::load_tokenizer;
+
+    #[test]
+    fn loads_wordpiece_vocab_txt() {
+        let dir = tempdir().unwrap();
+        let vocab_path = dir.path().join("vocab.txt");
+        fs::write(
+            &vocab_path,
+            "[PAD]\n[UNK]\n[CLS]\n[SEP]\n[MASK]\n你\n好\n",
+        )
+        .unwrap();
+
+        let tokenizer = load_tokenizer(&vocab_path, 6, "[PAD]").unwrap();
+        let encoding = tokenizer.encode("你好", true).unwrap();
+
+        assert_eq!(encoding.get_ids(), &[2, 5, 6, 3, 0, 0]);
+        assert_eq!(encoding.get_attention_mask(), &[1, 1, 1, 1, 0, 0]);
+        assert_eq!(encoding.get_type_ids(), &[0, 0, 0, 0, 0, 0]);
     }
 }

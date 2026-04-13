@@ -2,12 +2,12 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omni_search::{ModelBundle, ModelFamily, OmniSearch, OmniSearchConfig, RuntimeConfig, top_k};
+use omni_search::{ModelBundle, OmniSearch, OmniSearchConfig, RuntimeConfig, top_k};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let bundle_dir = root.join("models/fgclip2_bundle");
-    let samples_dir = root.join("samples");
+    let bundle_dir = env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
+    let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
     let args = env::args().skip(1).collect::<Vec<_>>();
     let (query, top_k_count, query_image_arg) = match args.as_slice() {
         [] => ("山".to_owned(), 10usize, None),
@@ -41,13 +41,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
+    let model_family = bundle.info().model_family.clone();
     let sdk = OmniSearch::new(OmniSearchConfig::from_local_bundle(
-        ModelFamily::FgClip,
+        model_family.clone(),
         &bundle_dir,
         RuntimeConfig::default(),
     ))?;
 
     println!("bundle: {}", bundle_dir.display());
+    println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
     println!("samples: {}", samples_dir.display());
     println!("images: {}", image_paths.len());
@@ -114,6 +116,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn list_images(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
