@@ -42,15 +42,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
     let model_family = bundle.info().model_family.clone();
+    let runtime = runtime_config_from_env()?;
     let sdk = OmniSearch::new(OmniSearchConfig::from_local_bundle(
         model_family.clone(),
         &bundle_dir,
-        RuntimeConfig::default(),
+        runtime.clone(),
     ))?;
 
     println!("bundle: {}", bundle_dir.display());
     println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
+    println!(
+        "runtime: intra_threads={}, inter_threads={:?}",
+        runtime.intra_threads, runtime.inter_threads
+    );
     println!("samples: {}", samples_dir.display());
     println!("images: {}", image_paths.len());
     println!("text query: {query}");
@@ -122,6 +127,36 @@ fn env_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
+    let mut runtime = RuntimeConfig::default();
+    if let Some(intra_threads) = env_usize("OMNI_INTRA_THREADS")? {
+        runtime.intra_threads = intra_threads;
+    }
+    if let Some(inter_threads) = env_usize("OMNI_INTER_THREADS")? {
+        runtime.inter_threads = Some(inter_threads);
+    }
+    Ok(runtime)
+}
+
+fn env_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error>> {
+    let Some(value) = env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .into_string()
+        .map_err(|_| format!("{name} must be valid UTF-8"))?;
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|error| format!("failed to parse {name}='{value}' as usize: {error}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} must be greater than 0").into());
+    }
+    Ok(Some(parsed))
 }
 
 fn list_images(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {

@@ -74,7 +74,9 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            intra_threads: 4,
+            intra_threads: std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get())
+                .unwrap_or(4),
             inter_threads: None,
             session_policy: SessionPolicy::SingleActive,
             graph_optimization_level: GraphOptimizationLevel::All,
