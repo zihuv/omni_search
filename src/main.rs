@@ -9,6 +9,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle_dir =
         env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
     let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
+    require_existing_dir("OMNI_BUNDLE_DIR", &bundle_dir, "model bundle")?;
+    require_existing_dir("OMNI_SAMPLES_DIR", &samples_dir, "sample image directory")?;
     let args = env::args().skip(1).collect::<Vec<_>>();
     let (query, top_k_count, query_image_arg) = match args.as_slice() {
         [] => ("山".to_owned(), 10usize, None),
@@ -197,4 +199,19 @@ fn collect_images(
         }
     }
     Ok(())
+}
+
+fn require_existing_dir(
+    env_name: &str,
+    path: &Path,
+    purpose: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if path.is_dir() {
+        return Ok(());
+    }
+    Err(format!(
+        "{purpose} not found at {}. Set {env_name} to a directory that contains the required local assets.",
+        path.display()
+    )
+    .into())
 }

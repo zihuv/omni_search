@@ -138,7 +138,7 @@ fn preprocess_image(image: &DynamicImage) -> ArrayD<f32> {
 
     let plane = 224usize * 224usize;
     let mean = [0.48145466f32, 0.4578275, 0.40821073];
-    let std = [0.26862954f32, 0.26130258, 0.27577711];
+    let std = [0.26862954f32, 0.261_302_6, 0.275_777_1];
     let mut values = vec![0.0f32; 3 * plane];
     for y in 0..224usize {
         for x in 0..224usize {

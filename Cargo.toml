@@ -3,9 +3,12 @@ name = "omni_search"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
+default-run = "omni_search"
 description = "A unified Rust SDK for multimodal embedding and similarity search."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/zihuv/omni_search"
+documentation = "https://docs.rs/omni_search"
 keywords = ["embedding", "multimodal", "onnx", "search", "ort"]
 categories = ["api-bindings", "computer-vision"]
 

@@ -7,10 +7,10 @@ use omni_search::{
 };
 
 #[test]
+#[ignore = "requires local OMNI_TEST_BUNDLE_DIR and OMNI_TEST_SAMPLE_IMAGE fixtures"]
 fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
-    let root = project_root();
-    let bundle_dir = root.join("models/fgclip2_bundle");
-    let image_path = first_image(root.join("samples"))?;
+    let bundle_dir = bundle_dir()?;
+    let image_path = sample_image()?;
 
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
     let sdk = OmniSearch::new(OmniSearchConfig::from_local_bundle(
@@ -57,30 +57,28 @@ fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn project_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn bundle_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    env_path("OMNI_TEST_BUNDLE_DIR").ok_or_else(|| {
+        "set OMNI_TEST_BUNDLE_DIR to a local model bundle before running this ignored test".into()
+    })
 }
 
-fn first_image(samples_dir: PathBuf) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let mut images = fs::read_dir(samples_dir)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        matches!(
-                            ext.to_ascii_lowercase().as_str(),
-                            "jpg" | "jpeg" | "png" | "webp" | "bmp"
-                        )
-                    })
-        })
-        .collect::<Vec<_>>();
-    images.sort();
-    images
-        .into_iter()
-        .next()
-        .ok_or_else(|| "no sample image found".into())
+fn sample_image() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = env_path("OMNI_TEST_SAMPLE_IMAGE").ok_or_else(|| {
+        "set OMNI_TEST_SAMPLE_IMAGE to a local image before running this ignored test".to_owned()
+    })?;
+    if !path.is_file() {
+        return Err(format!(
+            "OMNI_TEST_SAMPLE_IMAGE does not point to a file: {}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(path)
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }

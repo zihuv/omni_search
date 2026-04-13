@@ -67,7 +67,7 @@ impl FgClipBackend {
             token_embedding.dtype.bytes_per_value() * token_embedding.embedding_dim;
         let token_embedding_file = fs::File::open(&token_embedding_path)?;
         let token_embedding_len = token_embedding_file.metadata()?.len() as usize;
-        if token_embedding_len % token_embedding_row_bytes != 0 {
+        if !token_embedding_len.is_multiple_of(token_embedding_row_bytes) {
             return Err(Error::invalid_bundle(format!(
                 "token embedding file {} has invalid byte length {}",
                 token_embedding_path.display(),
