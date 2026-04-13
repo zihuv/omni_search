@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::backend::{EmbeddingBackend, create_backend};
 use crate::bundle::{ModelBundle, ModelInfo};
-use crate::config::OmniSearchConfig;
+use crate::config::{OmniSearchConfig, RuntimeConfig};
 use crate::embedding::Embedding;
 use crate::error::Error;
 
@@ -17,25 +17,28 @@ pub struct RuntimeState {
 
 pub struct OmniSearch {
     model_info: ModelInfo,
-    backend: Box<dyn EmbeddingBackend>,
+    backend: Box<dyn EmbeddingBackend + Send>,
 }
 
 impl OmniSearch {
     pub fn new(config: OmniSearchConfig) -> Result<Self, Error> {
-        if config.runtime.intra_threads == 0 {
-            return Err(Error::invalid_config(
-                "runtime.intra_threads must be greater than 0",
-            ));
-        }
-        if matches!(config.runtime.inter_threads, Some(0)) {
-            return Err(Error::invalid_config(
-                "runtime.inter_threads must be greater than 0 when set",
-            ));
-        }
-
+        validate_runtime_config(&config.runtime)?;
         let bundle = ModelBundle::load_for_config(&config.model)?;
+        Self::from_loaded_bundle(bundle, config.runtime)
+    }
+
+    pub fn from_local_model_dir(
+        path: impl AsRef<Path>,
+        runtime: RuntimeConfig,
+    ) -> Result<Self, Error> {
+        validate_runtime_config(&runtime)?;
+        let bundle = ModelBundle::load_from_dir(path)?;
+        Self::from_loaded_bundle(bundle, runtime)
+    }
+
+    fn from_loaded_bundle(bundle: ModelBundle, runtime: RuntimeConfig) -> Result<Self, Error> {
         let model_info = bundle.info().clone();
-        let backend = create_backend(bundle, config.runtime)?;
+        let backend = create_backend(bundle, runtime)?;
         Ok(Self {
             model_info,
             backend,
@@ -96,4 +99,18 @@ impl OmniSearch {
     pub fn runtime_state(&self) -> RuntimeState {
         self.backend.runtime_state()
     }
+}
+
+fn validate_runtime_config(runtime: &RuntimeConfig) -> Result<(), Error> {
+    if runtime.intra_threads == 0 {
+        return Err(Error::invalid_config(
+            "runtime.intra_threads must be greater than 0",
+        ));
+    }
+    if matches!(runtime.inter_threads, Some(0)) {
+        return Err(Error::invalid_config(
+            "runtime.inter_threads must be greater than 0 when set",
+        ));
+    }
+    Ok(())
 }

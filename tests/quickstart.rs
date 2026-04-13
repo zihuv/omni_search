@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use omni_search::{
-    ModelBundle, ModelFamily, OmniSearch, OmniSearchConfig, RuntimeConfig, cosine_similarity,
+    ModelBundle, OmniSearch, RuntimeConfig, cosine_similarity, probe_local_model_dir,
     score_embeddings, top_k,
 };
 
@@ -13,11 +13,9 @@ fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
     let image_path = sample_image()?;
 
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
-    let sdk = OmniSearch::new(OmniSearchConfig::from_local_bundle(
-        ModelFamily::FgClip,
-        &bundle_dir,
-        RuntimeConfig::default(),
-    ))?;
+    let probe = probe_local_model_dir(&bundle_dir);
+    assert!(probe.ok);
+    let sdk = OmniSearch::from_local_model_dir(&bundle_dir, RuntimeConfig::default())?;
 
     let query = "山".to_owned();
     let text = sdk.embed_text(&query)?;

@@ -23,7 +23,7 @@ use crate::runtime::RuntimeState;
 pub(crate) use chinese_clip::ChineseClipBackend;
 pub(crate) use fgclip::FgClipBackend;
 
-pub(crate) trait EmbeddingBackend {
+pub(crate) trait EmbeddingBackend: Send {
     fn embed_text(&self, text: &str) -> Result<Embedding, Error>;
     fn embed_texts(&self, texts: &[String]) -> Result<Vec<Embedding>, Error>;
     fn embed_image_path(&self, path: &Path) -> Result<Embedding, Error>;
@@ -39,7 +39,7 @@ pub(crate) trait EmbeddingBackend {
 pub(crate) fn create_backend(
     bundle: ModelBundle,
     runtime: RuntimeConfig,
-) -> Result<Box<dyn EmbeddingBackend>, Error> {
+) -> Result<Box<dyn EmbeddingBackend + Send>, Error> {
     match bundle.info().model_family {
         ModelFamily::FgClip => Ok(Box::new(FgClipBackend::new(bundle, runtime)?)),
         ModelFamily::ChineseClip => Ok(Box::new(ChineseClipBackend::new(bundle, runtime)?)),

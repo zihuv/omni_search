@@ -21,9 +21,32 @@ impl fmt::Display for ModelFamily {
 }
 
 #[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSourceKind {
+    LocalBundleDir,
+}
+
+impl fmt::Display for ModelSourceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalBundleDir => f.write_str("local_bundle_dir"),
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelSource {
     LocalBundleDir(PathBuf),
+}
+
+impl ModelSource {
+    pub fn kind(&self) -> ModelSourceKind {
+        match self {
+            Self::LocalBundleDir(_) => ModelSourceKind::LocalBundleDir,
+        }
+    }
 }
 
 #[non_exhaustive]

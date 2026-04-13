@@ -8,10 +8,10 @@ mod preprocess;
 mod runtime;
 mod score;
 
-pub use crate::bundle::{ModelBundle, ModelInfo};
+pub use crate::bundle::{LocalModelDirProbe, ModelBundle, ModelInfo, probe_local_model_dir};
 pub use crate::config::{
-    GraphOptimizationLevel, ModelConfig, ModelFamily, ModelSource, OmniSearchConfig, RuntimeConfig,
-    SessionPolicy,
+    GraphOptimizationLevel, ModelConfig, ModelFamily, ModelSource, ModelSourceKind,
+    OmniSearchConfig, RuntimeConfig, SessionPolicy,
 };
 pub use crate::embedding::Embedding;
 pub use crate::error::Error;

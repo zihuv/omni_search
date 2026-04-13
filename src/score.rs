@@ -70,7 +70,7 @@ where
 #[cfg(test)]
 mod tests {
     use crate::bundle::ModelInfo;
-    use crate::config::ModelFamily;
+    use crate::config::{ModelFamily, ModelSourceKind};
     use crate::embedding::Embedding;
     use crate::score::{cosine_similarity, score_embeddings, top_k};
 
@@ -84,9 +84,11 @@ mod tests {
     fn checks_embedding_model_identity() {
         let info = ModelInfo {
             model_family: ModelFamily::FgClip,
+            source_kind: ModelSourceKind::LocalBundleDir,
             model_id: "fgclip".to_owned(),
             model_revision: "1".to_owned(),
             embedding_dim: 2,
+            context_length: 64,
             normalize_output: true,
         };
         let left = Embedding::from_vec(&info, vec![1.0, 0.0]).unwrap();
