@@ -6,7 +6,8 @@ use omni_search::{ModelBundle, OmniSearch, OmniSearchConfig, RuntimeConfig, top_
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let bundle_dir = env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
+    let bundle_dir =
+        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
     let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
     let args = env::args().skip(1).collect::<Vec<_>>();
     let (query, top_k_count, query_image_arg) = match args.as_slice() {
@@ -53,8 +54,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
     println!(
-        "runtime: intra_threads={}, inter_threads={:?}",
-        runtime.intra_threads, runtime.inter_threads
+        "runtime: intra_threads={}, inter_threads={:?}, fgclip_max_patches={:?}",
+        runtime.intra_threads, runtime.inter_threads, runtime.fgclip_max_patches
     );
     println!("samples: {}", samples_dir.display());
     println!("images: {}", image_paths.len());
@@ -136,6 +137,9 @@ fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>
     }
     if let Some(inter_threads) = env_usize("OMNI_INTER_THREADS")? {
         runtime.inter_threads = Some(inter_threads);
+    }
+    if let Some(fgclip_max_patches) = env_usize("OMNI_FGCLIP_MAX_PATCHES")? {
+        runtime.fgclip_max_patches = Some(fgclip_max_patches);
     }
     Ok(runtime)
 }

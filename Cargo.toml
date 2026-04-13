@@ -11,6 +11,7 @@ categories = ["api-bindings", "computer-vision"]
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+memmap2 = "0.9"
 ndarray = "0.17"
 ort = "2.0.0-rc.12"
 serde = { version = "1.0", features = ["derive"] }

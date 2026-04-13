@@ -67,6 +67,7 @@ pub enum GraphOptimizationLevel {
 pub struct RuntimeConfig {
     pub intra_threads: usize,
     pub inter_threads: Option<usize>,
+    pub fgclip_max_patches: Option<usize>,
     pub session_policy: SessionPolicy,
     pub graph_optimization_level: GraphOptimizationLevel,
 }
@@ -78,6 +79,7 @@ impl Default for RuntimeConfig {
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(4),
             inter_threads: None,
+            fgclip_max_patches: None,
             session_policy: SessionPolicy::SingleActive,
             graph_optimization_level: GraphOptimizationLevel::All,
         }

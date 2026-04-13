@@ -36,7 +36,9 @@ pub(crate) fn determine_max_patches(
     default_max_patches: usize,
 ) -> usize {
     let raw = ((width as usize) / patch_size) * ((height as usize) / patch_size);
-    let mut buckets = vec![128usize, 256, 576, 784, default_max_patches];
+    let mut buckets = vec![128usize, 256, 576, 784];
+    buckets.retain(|candidate| *candidate <= default_max_patches);
+    buckets.push(default_max_patches);
     buckets.sort_unstable();
     buckets.dedup();
     buckets
@@ -295,6 +297,7 @@ mod tests {
     fn determines_patch_bucket() {
         assert_eq!(determine_max_patches(1920, 1080, 16, 1024), 1024);
         assert_eq!(determine_max_patches(320, 240, 16, 1024), 576);
+        assert_eq!(determine_max_patches(640, 427, 16, 576), 576);
     }
 
     #[test]

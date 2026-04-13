@@ -23,4 +23,7 @@ Quickstart:
 - run `cargo run --release -- "海边" "samples/pic1.jpg"` to keep the default top-k and use a specific query image for `image_to_image`;
 - run `cargo run --release -- "海边" 20 "samples/pic1.jpg"` to set both top-k and query image;
 - set `OMNI_INTRA_THREADS` / `OMNI_INTER_THREADS` to override ONNX Runtime thread counts when benchmarking or tuning;
+- set `OMNI_FGCLIP_MAX_PATCHES` to cap FG-CLIP2 image preprocessing at a smaller bucket without changing the ONNX bundle;
+- recommended `OMNI_FGCLIP_MAX_PATCHES` values are `128`, `256`, `576`, `784`, or `1024`; Chinese CLIP ignores this override because it uses fixed `224x224` inputs;
+- see `docs/model-performance.md` for the current Chinese CLIP vs FGCLIP2 performance and memory comparison;
 - run `cargo test --test quickstart -- --nocapture` for the matching smoke test.

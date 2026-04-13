@@ -22,11 +22,16 @@ pub(crate) fn preprocess_image(
             let (width, height) = image.dimensions();
             let short_edge = width.min(height).max(1);
             let scale = config.resize_shortest_edge as f32 / short_edge as f32;
-            let resized_width = ((width as f32 * scale).round() as u32).max(config.image_size as u32);
+            let resized_width =
+                ((width as f32 * scale).round() as u32).max(config.image_size as u32);
             let resized_height =
                 ((height as f32 * scale).round() as u32).max(config.image_size as u32);
-            let resized =
-                image::imageops::resize(&image, resized_width, resized_height, FilterType::CatmullRom);
+            let resized = image::imageops::resize(
+                &image,
+                resized_width,
+                resized_height,
+                FilterType::CatmullRom,
+            );
 
             let crop_size = config.image_size as u32;
             let left = (resized_width - crop_size) / 2;

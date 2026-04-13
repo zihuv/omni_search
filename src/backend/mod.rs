@@ -299,11 +299,7 @@ mod tests {
     fn loads_wordpiece_vocab_txt() {
         let dir = tempdir().unwrap();
         let vocab_path = dir.path().join("vocab.txt");
-        fs::write(
-            &vocab_path,
-            "[PAD]\n[UNK]\n[CLS]\n[SEP]\n[MASK]\n你\n好\n",
-        )
-        .unwrap();
+        fs::write(&vocab_path, "[PAD]\n[UNK]\n[CLS]\n[SEP]\n[MASK]\n你\n好\n").unwrap();
 
         let tokenizer = load_tokenizer(&vocab_path, 6, "[PAD]").unwrap();
         let encoding = tokenizer.encode("你好", true).unwrap();
