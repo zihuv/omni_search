@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use omni_search::{ModelBundle, OmniSearch, OmniSearchConfig, RuntimeConfig};
+use omni_search::{ModelBundle, OmniSearch, RuntimeConfig};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -72,11 +72,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let image_paths = list_images(&samples_dir)?;
 
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
-    let family = bundle.info().model_family.clone();
     let model_id = bundle.info().model_id.clone();
     let runtime = runtime_config_from_env()?;
 
-    let sdk = new_sdk(&bundle_dir, family.clone(), runtime.clone())?;
+    let sdk = new_sdk(&bundle_dir, runtime.clone())?;
     sdk.preload_text()?;
     sdk.preload_image()?;
 
@@ -102,14 +101,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect::<Result<Vec<_>, omni_search::Error>>()?;
 
     let cold_text = {
-        let sdk = new_sdk(&bundle_dir, family.clone(), runtime.clone())?;
+        let sdk = new_sdk(&bundle_dir, runtime.clone())?;
         measure_once(|| {
             let _ = sdk.embed_text(&texts[0])?;
             Ok::<_, omni_search::Error>(())
         })?
     };
     let cold_image = {
-        let sdk = new_sdk(&bundle_dir, family.clone(), runtime.clone())?;
+        let sdk = new_sdk(&bundle_dir, runtime.clone())?;
         measure_once(|| {
             let _ = sdk.embed_image_path(&image_paths[0])?;
             Ok::<_, omni_search::Error>(())
@@ -117,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let warm_text_avg = {
-        let sdk = new_sdk(&bundle_dir, family.clone(), runtime.clone())?;
+        let sdk = new_sdk(&bundle_dir, runtime.clone())?;
         sdk.preload_text()?;
         let _ = sdk.embed_text(&texts[0])?;
         measure_repeated(repeats, || {
@@ -126,7 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?
     };
     let warm_image_avg = {
-        let sdk = new_sdk(&bundle_dir, family, runtime.clone())?;
+        let sdk = new_sdk(&bundle_dir, runtime.clone())?;
         sdk.preload_image()?;
         let _ = sdk.embed_image_path(&image_paths[0])?;
         measure_repeated(repeats, || {
@@ -135,11 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?
     };
     let warm_image_batch_avg = {
-        let sdk = new_sdk(
-            &bundle_dir,
-            bundle.info().model_family.clone(),
-            runtime.clone(),
-        )?;
+        let sdk = new_sdk(&bundle_dir, runtime.clone())?;
         sdk.preload_image()?;
         let _ = sdk.embed_image_paths(&image_paths)?;
         measure_repeated(repeats, || {
@@ -173,14 +168,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn new_sdk(
-    bundle_dir: &Path,
-    family: omni_search::ModelFamily,
-    runtime: RuntimeConfig,
-) -> Result<OmniSearch, omni_search::Error> {
-    OmniSearch::new(OmniSearchConfig::from_local_bundle(
-        family, bundle_dir, runtime,
-    ))
+fn new_sdk(bundle_dir: &Path, runtime: RuntimeConfig) -> Result<OmniSearch, omni_search::Error> {
+    OmniSearch::builder()
+        .from_local_model_dir(bundle_dir)
+        .runtime_config(runtime)
+        .build()
 }
 
 fn measure_once(
@@ -209,17 +201,17 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
-    let mut runtime = RuntimeConfig::default();
+    let mut builder = RuntimeConfig::builder();
     if let Some(intra_threads) = env_usize("OMNI_INTRA_THREADS")? {
-        runtime.intra_threads = intra_threads;
+        builder.intra_threads(intra_threads);
     }
     if let Some(inter_threads) = env_usize("OMNI_INTER_THREADS")? {
-        runtime.inter_threads = Some(inter_threads);
+        builder.inter_threads(inter_threads);
     }
     if let Some(fgclip_max_patches) = env_usize("OMNI_FGCLIP_MAX_PATCHES")? {
-        runtime.fgclip_max_patches = Some(fgclip_max_patches);
+        builder.fgclip_max_patches(fgclip_max_patches);
     }
-    Ok(runtime)
+    Ok(builder.build()?)
 }
 
 fn env_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error>> {

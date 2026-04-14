@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,19 +71,90 @@ impl ModelConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct RuntimeConfigBuilder {
+    config: RuntimeConfig,
+}
+
+impl Default for RuntimeConfigBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RuntimeConfigBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: RuntimeConfig::default(),
+        }
+    }
+
+    pub fn from_config(config: RuntimeConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn intra_threads(&mut self, val: usize) -> &mut Self {
+        self.config.intra_threads = val;
+        self
+    }
+
+    pub fn inter_threads(&mut self, val: usize) -> &mut Self {
+        self.config.inter_threads = Some(val);
+        self
+    }
+
+    pub fn clear_inter_threads(&mut self) -> &mut Self {
+        self.config.inter_threads = None;
+        self
+    }
+
+    pub fn fgclip_max_patches(&mut self, val: usize) -> &mut Self {
+        self.config.fgclip_max_patches = Some(val);
+        self
+    }
+
+    pub fn clear_fgclip_max_patches(&mut self) -> &mut Self {
+        self.config.fgclip_max_patches = None;
+        self
+    }
+
+    pub fn session_policy(&mut self, val: SessionPolicy) -> &mut Self {
+        self.config.session_policy = val;
+        self
+    }
+
+    pub fn graph_optimization_level(&mut self, val: GraphOptimizationLevel) -> &mut Self {
+        self.config.graph_optimization_level = val;
+        self
+    }
+
+    pub fn build(&mut self) -> Result<RuntimeConfig, Error> {
+        self.config.validate()?;
+        Ok(self.config.clone())
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionPolicy {
+    #[serde(alias = "SingleActive")]
     SingleActive,
+    #[serde(alias = "KeepBothLoaded")]
     KeepBothLoaded,
 }
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum GraphOptimizationLevel {
+    #[serde(alias = "Disabled")]
     Disabled,
+    #[serde(alias = "Basic")]
     Basic,
+    #[serde(alias = "Extended")]
     Extended,
+    #[serde(alias = "All")]
     All,
 }
 
@@ -109,6 +182,26 @@ impl Default for RuntimeConfig {
     }
 }
 
+impl RuntimeConfig {
+    pub fn builder() -> RuntimeConfigBuilder {
+        RuntimeConfigBuilder::new()
+    }
+
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.intra_threads == 0 {
+            return Err(Error::invalid_config(
+                "runtime.intra_threads must be greater than 0",
+            ));
+        }
+        if matches!(self.inter_threads, Some(0)) {
+            return Err(Error::invalid_config(
+                "runtime.inter_threads must be greater than 0 when set",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OmniSearchConfig {
@@ -130,5 +223,86 @@ impl OmniSearchConfig {
             model: ModelConfig::from_local_bundle(family, path),
             runtime,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GraphOptimizationLevel, RuntimeConfig, RuntimeConfigBuilder, SessionPolicy};
+
+    #[test]
+    fn runtime_builder_uses_defaults_when_fields_are_not_overridden() {
+        let expected = RuntimeConfig::default();
+        let actual = RuntimeConfigBuilder::new().build().unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn runtime_builder_overrides_selected_fields_only() {
+        let actual = RuntimeConfig::builder()
+            .intra_threads(2)
+            .inter_threads(1)
+            .fgclip_max_patches(256)
+            .session_policy(SessionPolicy::KeepBothLoaded)
+            .graph_optimization_level(GraphOptimizationLevel::Basic)
+            .build()
+            .unwrap();
+
+        assert_eq!(actual.intra_threads, 2);
+        assert_eq!(actual.inter_threads, Some(1));
+        assert_eq!(actual.fgclip_max_patches, Some(256));
+        assert_eq!(actual.session_policy, SessionPolicy::KeepBothLoaded);
+        assert_eq!(
+            actual.graph_optimization_level,
+            GraphOptimizationLevel::Basic
+        );
+    }
+
+    #[test]
+    fn runtime_builder_can_clear_optional_overrides() {
+        let actual = RuntimeConfig::builder()
+            .inter_threads(2)
+            .clear_inter_threads()
+            .fgclip_max_patches(256)
+            .clear_fgclip_max_patches()
+            .build()
+            .unwrap();
+
+        assert_eq!(actual.inter_threads, None);
+        assert_eq!(actual.fgclip_max_patches, None);
+    }
+
+    #[test]
+    fn runtime_builder_rejects_invalid_values() {
+        let error = RuntimeConfig::builder()
+            .intra_threads(0)
+            .build()
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("runtime.intra_threads must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn session_policy_deserializes_snake_case_and_legacy_pascal_case() {
+        let snake_case: SessionPolicy = serde_json::from_str(r#""keep_both_loaded""#).unwrap();
+        let legacy_pascal_case: SessionPolicy =
+            serde_json::from_str(r#""KeepBothLoaded""#).unwrap();
+
+        assert_eq!(snake_case, SessionPolicy::KeepBothLoaded);
+        assert_eq!(legacy_pascal_case, SessionPolicy::KeepBothLoaded);
+    }
+
+    #[test]
+    fn graph_optimization_level_deserializes_snake_case_and_legacy_pascal_case() {
+        let snake_case: GraphOptimizationLevel = serde_json::from_str(r#""basic""#).unwrap();
+        let legacy_pascal_case: GraphOptimizationLevel =
+            serde_json::from_str(r#""Basic""#).unwrap();
+
+        assert_eq!(snake_case, GraphOptimizationLevel::Basic);
+        assert_eq!(legacy_pascal_case, GraphOptimizationLevel::Basic);
     }
 }

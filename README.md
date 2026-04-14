@@ -18,6 +18,7 @@ Quickstart:
 
 - set `OMNI_BUNDLE_DIR` to a local bundle directory that contains `manifest.json`, tokenizer assets, and ONNX files;
 - set `OMNI_SAMPLES_DIR` to a directory containing one or more `.jpg`, `.jpeg`, `.png`, `.webp`, or `.bmp` images;
+- build SDK instances with `OmniSearch::builder()` when you only want to override part of the runtime config and keep the rest at defaults;
 - run `cargo run --bin omni_search --release` to scan all images in `OMNI_SAMPLES_DIR` with the default query `"山"`;
 - `main.rs` prints both `text_to_image` and `image_to_image` top-k examples using the same public SDK API;
 - run `cargo run --bin omni_search --release -- "海边"` to scan all images in `OMNI_SAMPLES_DIR` with a custom query;
@@ -29,3 +30,17 @@ Quickstart:
 - recommended `OMNI_FGCLIP_MAX_PATCHES` values are `128`, `256`, `576`, `784`, or `1024`; Chinese CLIP ignores this override because it uses fixed `224x224` inputs;
 - see `docs/model-performance.md` for the current Chinese CLIP vs FGCLIP2 performance and memory comparison;
 - run `cargo test --test quickstart -- --ignored --nocapture` to execute the smoke test after setting `OMNI_TEST_BUNDLE_DIR` and `OMNI_TEST_SAMPLE_IMAGE`.
+
+Builder example:
+
+```rust
+use omni_search::{GraphOptimizationLevel, OmniSearch, SessionPolicy};
+
+let sdk = OmniSearch::builder()
+    .from_local_model_dir("D:/models/fgclip2_bundle")
+    .intra_threads(4)
+    .fgclip_max_patches(256)
+    .session_policy(SessionPolicy::SingleActive)
+    .graph_optimization_level(GraphOptimizationLevel::All)
+    .build()?;
+```

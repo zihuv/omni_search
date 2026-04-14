@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omni_search::{ModelBundle, OmniSearch, OmniSearchConfig, RuntimeConfig, top_k};
+use omni_search::{ModelBundle, OmniSearch, RuntimeConfig, top_k};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
@@ -46,11 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
     let model_family = bundle.info().model_family.clone();
     let runtime = runtime_config_from_env()?;
-    let sdk = OmniSearch::new(OmniSearchConfig::from_local_bundle(
-        model_family.clone(),
-        &bundle_dir,
-        runtime.clone(),
-    ))?;
+    let sdk = OmniSearch::builder()
+        .from_local_model_dir(&bundle_dir)
+        .runtime_config(runtime.clone())
+        .build()?;
 
     println!("bundle: {}", bundle_dir.display());
     println!("family: {model_family}");
@@ -133,17 +132,17 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
-    let mut runtime = RuntimeConfig::default();
+    let mut builder = RuntimeConfig::builder();
     if let Some(intra_threads) = env_usize("OMNI_INTRA_THREADS")? {
-        runtime.intra_threads = intra_threads;
+        builder.intra_threads(intra_threads);
     }
     if let Some(inter_threads) = env_usize("OMNI_INTER_THREADS")? {
-        runtime.inter_threads = Some(inter_threads);
+        builder.inter_threads(inter_threads);
     }
     if let Some(fgclip_max_patches) = env_usize("OMNI_FGCLIP_MAX_PATCHES")? {
-        runtime.fgclip_max_patches = Some(fgclip_max_patches);
+        builder.fgclip_max_patches(fgclip_max_patches);
     }
-    Ok(runtime)
+    Ok(builder.build()?)
 }
 
 fn env_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error>> {
