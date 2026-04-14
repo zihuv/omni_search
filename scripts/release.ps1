@@ -167,9 +167,9 @@ Write-Host "Updating Cargo.toml version: $currentVersion -> $Version"
 Set-PackageVersion -ManifestPath $manifestPath -NewVersion $Version
 
 Invoke-External cargo @("test")
-Invoke-External cargo @("publish", "--dry-run", "--locked")
+Invoke-External cargo @("publish", "--dry-run", "--locked", "--allow-dirty")
 
-Invoke-External git @("add", "Cargo.toml")
+Invoke-External git @("add", "Cargo.toml", "Cargo.lock")
 Invoke-External git @("commit", "-m", $Version)
 
 if (-not $SkipPublish) {
