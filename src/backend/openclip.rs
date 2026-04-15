@@ -6,7 +6,8 @@ use ort::value::TensorRef;
 use tokenizers::{Encoding, Tokenizer};
 
 use crate::backend::{
-    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer, single_embedding,
+    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer_with_pad_id,
+    single_embedding,
 };
 use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{RuntimeConfig, SessionPolicy};
@@ -18,46 +19,40 @@ use crate::preprocess::clip_image::{
 };
 use crate::runtime::RuntimeState;
 
-pub(crate) struct ChineseClipBackend {
+pub(crate) struct OpenClipBackend {
     info: ModelInfo,
     normalize_output: bool,
     session_policy: SessionPolicy,
     tokenizer: Tokenizer,
     context_length: usize,
+    lower_case: bool,
     text_output_name: String,
     input_ids_name: String,
-    attention_mask_name: String,
-    token_type_ids_name: Option<String>,
     image_output_name: String,
     image_preprocess: ClipImagePreprocessConfig,
     text_session: LazySession,
     image_session: LazySession,
 }
 
-impl ChineseClipBackend {
+impl OpenClipBackend {
     pub(crate) fn new(bundle: ModelBundle, runtime: RuntimeConfig) -> Result<Self, Error> {
-        let tokenizer = load_tokenizer(
+        let (input_ids_name, lower_case, pad_id) = match &bundle.manifest().text.input {
+            TextInputConfig::InputIds {
+                input_ids_name,
+                lower_case,
+                pad_id,
+            } => (input_ids_name.clone(), *lower_case, pad_id.unwrap_or(0)),
+            _ => {
+                return Err(Error::invalid_bundle(
+                    "open clip bundle must use input_ids text input",
+                ));
+            }
+        };
+        let tokenizer = load_tokenizer_with_pad_id(
             bundle.tokenizer_path(),
             bundle.manifest().text.context_length,
-            "[PAD]",
+            pad_id,
         )?;
-        let (input_ids_name, attention_mask_name, token_type_ids_name) =
-            match &bundle.manifest().text.input {
-                TextInputConfig::BertLike {
-                    input_ids_name,
-                    attention_mask_name,
-                    token_type_ids_name,
-                } => (
-                    input_ids_name.clone(),
-                    attention_mask_name.clone(),
-                    token_type_ids_name.clone(),
-                ),
-                _ => {
-                    return Err(Error::invalid_bundle(
-                        "chinese clip bundle must use bert_like text input",
-                    ));
-                }
-            };
         let image_preprocess = match &bundle.manifest().image.preprocess {
             ImagePreprocessConfig::ClipImage {
                 image_size,
@@ -74,20 +69,20 @@ impl ChineseClipBackend {
             },
             _ => {
                 return Err(Error::invalid_bundle(
-                    "chinese clip bundle must use clip_image preprocess",
+                    "open clip bundle must use clip_image preprocess",
                 ));
             }
         };
+
         Ok(Self {
             info: bundle.info().clone(),
             normalize_output: bundle.info().normalize_output,
             session_policy: runtime.session_policy,
             tokenizer,
             context_length: bundle.manifest().text.context_length,
+            lower_case,
             text_output_name: bundle.manifest().text.output_name.clone(),
             input_ids_name,
-            attention_mask_name,
-            token_type_ids_name,
             image_output_name: bundle.manifest().image.output_name.clone(),
             image_preprocess,
             text_session: LazySession::new(bundle.text_onnx_path().to_path_buf(), runtime.clone()),
@@ -108,11 +103,20 @@ impl ChineseClipBackend {
     }
 
     fn encode_texts_internal(&self, texts: &[String]) -> Result<Vec<Embedding>, Error> {
+        let inputs = texts
+            .iter()
+            .map(|text| {
+                if self.lower_case {
+                    text.to_lowercase()
+                } else {
+                    text.clone()
+                }
+            })
+            .collect::<Vec<_>>();
         let encodings = self
             .tokenizer
-            .encode_batch(texts.to_vec(), true)
+            .encode_batch(inputs, true)
             .map_err(Error::from_tokenizer)?;
-
         let input_ids = encodings_to_i64_array(&encodings, self.context_length, |encoding| {
             encoding
                 .get_ids()
@@ -120,59 +124,16 @@ impl ChineseClipBackend {
                 .map(|id| i64::from(*id))
                 .collect::<Vec<_>>()
         })?;
-        let attention_mask = encodings_to_i64_array(&encodings, self.context_length, |encoding| {
-            encoding
-                .get_attention_mask()
-                .iter()
-                .map(|value| i64::from(*value))
-                .collect::<Vec<_>>()
-        })?;
-        let token_type_ids = if self.token_type_ids_name.is_some() {
-            Some(encodings_to_i64_array(
-                &encodings,
-                self.context_length,
-                |encoding| {
-                    encoding
-                        .get_type_ids()
-                        .iter()
-                        .map(|value| i64::from(*value))
-                        .collect::<Vec<_>>()
-                },
-            )?)
-        } else {
-            None
-        };
 
         self.text_session.with_session(|session| {
             let input_ids =
                 TensorRef::from_array_view(input_ids.view()).map_err(Error::from_ort)?;
-            let attention_mask =
-                TensorRef::from_array_view(attention_mask.view()).map_err(Error::from_ort)?;
-
-            let outputs = if let (Some(token_type_ids_name), Some(token_type_ids)) =
-                (&self.token_type_ids_name, &token_type_ids)
-            {
-                let token_type_ids =
-                    TensorRef::from_array_view(token_type_ids.view()).map_err(Error::from_ort)?;
-                session
-                    .run(ort::inputs![
-                        self.input_ids_name.as_str() => input_ids,
-                        self.attention_mask_name.as_str() => attention_mask,
-                        token_type_ids_name.as_str() => token_type_ids,
-                    ])
-                    .map_err(Error::from_ort)?
-            } else {
-                session
-                    .run(ort::inputs![
-                        self.input_ids_name.as_str() => input_ids,
-                        self.attention_mask_name.as_str() => attention_mask,
-                    ])
-                    .map_err(Error::from_ort)?
-            };
-
+            let outputs = session
+                .run(ort::inputs![self.input_ids_name.as_str() => input_ids])
+                .map_err(Error::from_ort)?;
             let output = outputs.get(self.text_output_name.as_str()).ok_or_else(|| {
                 Error::ort(format!(
-                    "text output '{}' not found in chinese clip session",
+                    "text output '{}' not found in open clip session",
                     self.text_output_name
                 ))
             })?;
@@ -201,7 +162,7 @@ impl ChineseClipBackend {
                 .get(self.image_output_name.as_str())
                 .ok_or_else(|| {
                     Error::ort(format!(
-                        "image output '{}' not found in chinese clip session",
+                        "image output '{}' not found in open clip session",
                         self.image_output_name
                     ))
                 })?;
@@ -215,11 +176,11 @@ impl ChineseClipBackend {
     }
 }
 
-impl EmbeddingBackend for ChineseClipBackend {
+impl EmbeddingBackend for OpenClipBackend {
     fn embed_text(&self, text: &str) -> Result<Embedding, Error> {
         let batch = vec![text.to_owned()];
         self.maybe_unload_image();
-        single_embedding(self.encode_texts_internal(&batch)?, "chinese clip text")
+        single_embedding(self.encode_texts_internal(&batch)?, "open clip text")
     }
 
     fn embed_texts(&self, texts: &[String]) -> Result<Vec<Embedding>, Error> {
@@ -234,14 +195,14 @@ impl EmbeddingBackend for ChineseClipBackend {
         self.maybe_unload_text();
         let image = image::open(path)
             .map_err(|error| Error::image_preprocess(format!("{}: {error}", path.display())))?;
-        single_embedding(self.encode_images_internal(&[image])?, "chinese clip image")
+        single_embedding(self.encode_images_internal(&[image])?, "open clip image")
     }
 
     fn embed_image_bytes(&self, bytes: &[u8]) -> Result<Embedding, Error> {
         self.maybe_unload_text();
         let image = image::load_from_memory(bytes)
             .map_err(|error| Error::image_preprocess(error.to_string()))?;
-        single_embedding(self.encode_images_internal(&[image])?, "chinese clip image")
+        single_embedding(self.encode_images_internal(&[image])?, "open clip image")
     }
 
     fn embed_image_paths(&self, paths: &[PathBuf]) -> Result<Vec<Embedding>, Error> {

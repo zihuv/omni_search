@@ -72,7 +72,7 @@ pub(crate) fn stack_image_batches(
     for image in images {
         if image.shape() != [1, 3, image_size, image_size] {
             return Err(Error::image_preprocess(format!(
-                "all chinese clip images must have shape [1,3,{image_size},{image_size}]"
+                "all clip images must have shape [1,3,{image_size},{image_size}]"
             )));
         }
         values.extend_from_slice(

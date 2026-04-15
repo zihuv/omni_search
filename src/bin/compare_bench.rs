@@ -50,7 +50,7 @@ struct TimingMs {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let bundle_dir =
-        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
+        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_flat"));
     let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
     let repeats = env::var("OMNI_REPEATS")
         .ok()

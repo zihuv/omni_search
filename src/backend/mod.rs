@@ -1,5 +1,6 @@
 mod chinese_clip;
 mod fgclip;
+mod openclip;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +23,7 @@ use crate::runtime::RuntimeState;
 
 pub(crate) use chinese_clip::ChineseClipBackend;
 pub(crate) use fgclip::FgClipBackend;
+pub(crate) use openclip::OpenClipBackend;
 
 pub(crate) trait EmbeddingBackend: Send {
     fn embed_text(&self, text: &str) -> Result<Embedding, Error>;
@@ -43,6 +45,7 @@ pub(crate) fn create_backend(
     match bundle.info().model_family {
         ModelFamily::FgClip => Ok(Box::new(FgClipBackend::new(bundle, runtime)?)),
         ModelFamily::ChineseClip => Ok(Box::new(ChineseClipBackend::new(bundle, runtime)?)),
+        ModelFamily::OpenClip => Ok(Box::new(OpenClipBackend::new(bundle, runtime)?)),
     }
 }
 
@@ -126,6 +129,38 @@ pub(crate) fn load_tokenizer(
     fallback_pad_token: &str,
 ) -> Result<Tokenizer, Error> {
     let mut tokenizer = load_tokenizer_from_path(tokenizer_path)?;
+    let pad_id = tokenizer.token_to_id(fallback_pad_token).unwrap_or(0);
+    apply_tokenizer_truncation_and_padding(
+        &mut tokenizer,
+        max_len,
+        pad_id,
+        fallback_pad_token.to_owned(),
+    )?;
+    Ok(tokenizer)
+}
+
+pub(crate) fn load_tokenizer_with_pad_id(
+    tokenizer_path: &Path,
+    max_len: usize,
+    pad_id: u32,
+) -> Result<Tokenizer, Error> {
+    let mut tokenizer = load_tokenizer_from_path(tokenizer_path)?;
+    let pad_token = tokenizer.id_to_token(pad_id).ok_or_else(|| {
+        Error::tokenizer(format!(
+            "{} does not contain pad token id {pad_id}",
+            tokenizer_path.display()
+        ))
+    })?;
+    apply_tokenizer_truncation_and_padding(&mut tokenizer, max_len, pad_id, pad_token)?;
+    Ok(tokenizer)
+}
+
+fn apply_tokenizer_truncation_and_padding(
+    tokenizer: &mut Tokenizer,
+    max_len: usize,
+    pad_id: u32,
+    pad_token: String,
+) -> Result<(), Error> {
     tokenizer
         .with_truncation(Some(TruncationParams {
             max_length: max_len,
@@ -133,19 +168,20 @@ pub(crate) fn load_tokenizer(
         }))
         .map_err(Error::from_tokenizer)?;
 
-    let pad_id = tokenizer.token_to_id(fallback_pad_token).unwrap_or(0);
     let mut padding = tokenizer
         .get_padding()
         .cloned()
         .unwrap_or_else(|| PaddingParams {
             pad_id,
             pad_type_id: 0,
-            pad_token: fallback_pad_token.to_owned(),
+            pad_token: pad_token.clone(),
             ..Default::default()
         });
+    padding.pad_id = pad_id;
+    padding.pad_token = pad_token;
     padding.strategy = PaddingStrategy::Fixed(max_len);
     tokenizer.with_padding(Some(padding));
-    Ok(tokenizer)
+    Ok(())
 }
 
 fn load_tokenizer_from_path(tokenizer_path: &Path) -> Result<Tokenizer, Error> {

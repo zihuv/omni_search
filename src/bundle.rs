@@ -1,9 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::Deserialize;
+
 use crate::config::{ModelConfig, ModelFamily, ModelSource, ModelSourceKind};
 use crate::error::Error;
 use crate::manifest::{ImagePreprocessConfig, ModelManifest};
+
+const FLAT_MODEL_CONFIG_FORMAT_V1: &str = "omni_flat_v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelInfo {
@@ -55,22 +59,7 @@ impl ModelBundle {
             )));
         }
 
-        let manifest_path = root.join("manifest.json");
-        let manifest_bytes = fs::read(&manifest_path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::invalid_bundle(format!("missing {}", manifest_path.display()))
-            } else {
-                error.into()
-            }
-        })?;
-        let manifest: ModelManifest = serde_json::from_slice(&manifest_bytes).map_err(|error| {
-            Error::invalid_bundle(format!(
-                "failed to parse manifest {}: {error}",
-                manifest_path.display()
-            ))
-        })?;
-        manifest.validate()?;
-
+        let (manifest_path, manifest) = load_manifest_for_dir(&root)?;
         let text_onnx_path = require_file(&root, &manifest.text.onnx, "text.onnx")?;
         let image_onnx_path = require_file(&root, &manifest.image.onnx, "image.onnx")?;
         let tokenizer_path = require_file(&root, &manifest.text.tokenizer, "tokenizer")?;
@@ -179,7 +168,7 @@ impl ModelBundle {
 
 pub fn probe_local_model_dir(path: impl AsRef<Path>) -> LocalModelDirProbe {
     let normalized_path = absolutize(path.as_ref()).unwrap_or_else(|_| path.as_ref().to_path_buf());
-    let manifest_path = normalized_path.join("manifest.json");
+    let manifest_path = normalized_path.join("model_config.json");
 
     let mut probe = LocalModelDirProbe {
         ok: false,
@@ -204,29 +193,18 @@ pub fn probe_local_model_dir(path: impl AsRef<Path>) -> LocalModelDirProbe {
         return probe;
     }
 
-    let manifest_bytes = match fs::read(&manifest_path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            probe.missing_files.push(manifest_path);
-            probe.error = Some("missing manifest.json".to_owned());
-            return probe;
+    let manifest = match load_manifest_for_dir(&normalized_path) {
+        Ok((resolved_manifest_path, manifest)) => {
+            probe.manifest_path = resolved_manifest_path;
+            manifest
         }
         Err(error) => {
-            probe.error = Some(format!(
-                "failed to read manifest {}: {error}",
-                manifest_path.display()
-            ));
-            return probe;
-        }
-    };
-
-    let manifest: ModelManifest = match serde_json::from_slice(&manifest_bytes) {
-        Ok(manifest) => manifest,
-        Err(error) => {
-            probe.error = Some(format!(
-                "failed to parse manifest {}: {error}",
-                manifest_path.display()
-            ));
+            if !manifest_path.is_file() {
+                probe.missing_files.push(manifest_path);
+                probe.error = Some("missing model_config.json".to_owned());
+                return probe;
+            }
+            probe.error = Some(error.to_string());
             return probe;
         }
     };
@@ -243,7 +221,7 @@ pub fn probe_local_model_dir(path: impl AsRef<Path>) -> LocalModelDirProbe {
         return probe;
     }
 
-    probe.missing_files = required_bundle_files(&normalized_path, &manifest)
+    probe.missing_files = required_model_files(&normalized_path, &manifest)
         .into_iter()
         .filter(|path| !path.is_file())
         .collect();
@@ -257,7 +235,7 @@ pub fn probe_local_model_dir(path: impl AsRef<Path>) -> LocalModelDirProbe {
     probe
 }
 
-fn required_bundle_files(root: &Path, manifest: &ModelManifest) -> Vec<PathBuf> {
+fn required_model_files(root: &Path, manifest: &ModelManifest) -> Vec<PathBuf> {
     let mut files = vec![
         resolve_bundle_path(root, &manifest.text.onnx),
         resolve_bundle_path(root, &manifest.image.onnx),
@@ -274,6 +252,35 @@ fn required_bundle_files(root: &Path, manifest: &ModelManifest) -> Vec<PathBuf> 
         files.push(resolve_bundle_path(root, vision_pos_embedding));
     }
     files
+}
+
+fn load_manifest_for_dir(root: &Path) -> Result<(PathBuf, ModelManifest), Error> {
+    let model_config_path = root.join("model_config.json");
+    let flat_config: FlatModelConfigV1 = parse_json_file(&model_config_path, "model config")?;
+    if flat_config.format != FLAT_MODEL_CONFIG_FORMAT_V1 {
+        return Err(Error::invalid_bundle(format!(
+            "unsupported model config format '{}' in {}",
+            flat_config.format,
+            model_config_path.display()
+        )));
+    }
+    flat_config.manifest.validate()?;
+    Ok((model_config_path, flat_config.manifest))
+}
+
+fn parse_json_file<T: for<'de> Deserialize<'de>>(path: &Path, label: &str) -> Result<T, Error> {
+    let bytes = fs::read(path).map_err(|error| {
+        Error::invalid_bundle(format!(
+            "failed to read {label} {}: {error}",
+            path.display()
+        ))
+    })?;
+    serde_json::from_slice(&bytes).map_err(|error| {
+        Error::invalid_bundle(format!(
+            "failed to parse {label} {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn resolve_bundle_path(root: &Path, path: &Path) -> PathBuf {
@@ -303,54 +310,75 @@ fn absolutize(path: &Path) -> Result<PathBuf, Error> {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct FlatModelConfigV1 {
+    format: String,
+    #[serde(flatten)]
+    manifest: ModelManifest,
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use tempfile::tempdir;
 
-    use super::{ModelBundle, ModelSourceKind, probe_local_model_dir};
+    use super::{ModelBundle, probe_local_model_dir};
 
     #[test]
-    fn loads_fgclip_bundle_layout() {
+    fn probe_reports_missing_model_config() {
+        let dir = tempdir().unwrap();
+        let probe = probe_local_model_dir(dir.path());
+
+        assert!(!probe.ok);
+        assert_eq!(probe.source_kind, None);
+        assert_eq!(probe.family, None);
+        assert_eq!(
+            probe.missing_files,
+            vec![dir.path().join("model_config.json")]
+        );
+        assert_eq!(probe.error.as_deref(), Some("missing model_config.json"));
+    }
+
+    #[test]
+    fn loads_flat_chinese_clip_layout() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::create_dir_all(root.join("onnx")).unwrap();
-        fs::create_dir_all(root.join("assets")).unwrap();
-        fs::write(root.join("onnx/text.onnx"), []).unwrap();
-        fs::write(root.join("onnx/image.onnx"), []).unwrap();
-        fs::write(root.join("assets/tokenizer.json"), "{}").unwrap();
-        fs::write(root.join("assets/text_token_embedding.bin"), []).unwrap();
-        fs::write(root.join("assets/vision_pos_embedding.bin"), []).unwrap();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("vocab.txt"), "").unwrap();
         fs::write(
-            root.join("manifest.json"),
+            root.join("model_config.json"),
             r#"{
+                "format": "omni_flat_v1",
                 "schema_version": 1,
-                "family": "fg_clip",
-                "model_id": "fgclip2-base",
-                "model_revision": "2026-04-13",
-                "embedding_dim": 768,
+                "family": "chinese_clip",
+                "model_id": "chinese-clip-vit-base-patch16",
+                "model_revision": "test-flat",
+                "embedding_dim": 512,
                 "normalize_output": true,
                 "text": {
-                  "onnx": "onnx/text.onnx",
+                  "onnx": "text.onnx",
                   "output_name": "text_features",
-                  "tokenizer": "assets/tokenizer.json",
-                  "context_length": 64,
-                  "input": { "kind": "token_embeds" },
-                  "token_embedding": {
-                    "file": "assets/text_token_embedding.bin",
-                    "dtype": "f16",
-                    "embedding_dim": 768
+                  "tokenizer": "vocab.txt",
+                  "context_length": 52,
+                  "input": {
+                    "kind": "bert_like",
+                    "input_ids_name": "input_ids",
+                    "attention_mask_name": "attention_mask",
+                    "token_type_ids_name": "token_type_ids"
                   }
                 },
                 "image": {
-                  "onnx": "onnx/image.onnx",
+                  "onnx": "visual.onnx",
                   "output_name": "image_features",
                   "preprocess": {
-                    "kind": "fgclip_patch_tokens",
-                    "patch_size": 16,
-                    "default_max_patches": 1024,
-                    "vision_pos_embedding": "assets/vision_pos_embedding.bin"
+                    "kind": "clip_image",
+                    "image_size": 224,
+                    "resize_shortest_edge": 224,
+                    "crop": "none",
+                    "mean": [0.48145466, 0.4578275, 0.40821073],
+                    "std": [0.26862954, 0.26130258, 0.27577711]
                   }
                 }
             }"#,
@@ -358,52 +386,55 @@ mod tests {
         .unwrap();
 
         let bundle = ModelBundle::load_from_dir(root).unwrap();
-        assert_eq!(bundle.model_id(), "fgclip2-base");
-        assert_eq!(bundle.info().source_kind, ModelSourceKind::LocalBundleDir);
-        assert_eq!(bundle.info().embedding_dim, 768);
-        assert_eq!(bundle.info().context_length, 64);
+        assert_eq!(bundle.model_id(), "chinese-clip-vit-base-patch16");
+        assert_eq!(
+            bundle.info().model_family,
+            crate::config::ModelFamily::ChineseClip
+        );
+        assert_eq!(bundle.info().embedding_dim, 512);
+        assert_eq!(bundle.info().context_length, 52);
+        assert_eq!(bundle.manifest_path(), &root.join("model_config.json"));
     }
 
     #[test]
-    fn probes_fgclip_bundle_layout() {
+    fn probes_flat_chinese_clip_layout() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        fs::create_dir_all(root.join("onnx")).unwrap();
-        fs::create_dir_all(root.join("assets")).unwrap();
-        fs::write(root.join("onnx/text.onnx"), []).unwrap();
-        fs::write(root.join("onnx/image.onnx"), []).unwrap();
-        fs::write(root.join("assets/tokenizer.json"), "{}").unwrap();
-        fs::write(root.join("assets/text_token_embedding.bin"), []).unwrap();
-        fs::write(root.join("assets/vision_pos_embedding.bin"), []).unwrap();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("vocab.txt"), "").unwrap();
         fs::write(
-            root.join("manifest.json"),
+            root.join("model_config.json"),
             r#"{
+                "format": "omni_flat_v1",
                 "schema_version": 1,
-                "family": "fg_clip",
-                "model_id": "fgclip2-base",
-                "model_revision": "2026-04-13",
-                "embedding_dim": 768,
+                "family": "chinese_clip",
+                "model_id": "chinese-clip-vit-base-patch16",
+                "model_revision": "test-flat",
+                "embedding_dim": 512,
                 "normalize_output": true,
                 "text": {
-                  "onnx": "onnx/text.onnx",
+                  "onnx": "text.onnx",
                   "output_name": "text_features",
-                  "tokenizer": "assets/tokenizer.json",
-                  "context_length": 64,
-                  "input": { "kind": "token_embeds" },
-                  "token_embedding": {
-                    "file": "assets/text_token_embedding.bin",
-                    "dtype": "f16",
-                    "embedding_dim": 768
+                  "tokenizer": "vocab.txt",
+                  "context_length": 52,
+                  "input": {
+                    "kind": "bert_like",
+                    "input_ids_name": "input_ids",
+                    "attention_mask_name": "attention_mask",
+                    "token_type_ids_name": "token_type_ids"
                   }
                 },
                 "image": {
-                  "onnx": "onnx/image.onnx",
+                  "onnx": "visual.onnx",
                   "output_name": "image_features",
                   "preprocess": {
-                    "kind": "fgclip_patch_tokens",
-                    "patch_size": 16,
-                    "default_max_patches": 1024,
-                    "vision_pos_embedding": "assets/vision_pos_embedding.bin"
+                    "kind": "clip_image",
+                    "image_size": 224,
+                    "resize_shortest_edge": 224,
+                    "crop": "none",
+                    "mean": [0.48145466, 0.4578275, 0.40821073],
+                    "std": [0.26862954, 0.26130258, 0.27577711]
                   }
                 }
             }"#,
@@ -412,10 +443,124 @@ mod tests {
 
         let probe = probe_local_model_dir(root);
         assert!(probe.ok);
-        assert_eq!(probe.source_kind, Some(ModelSourceKind::LocalBundleDir));
+        assert_eq!(probe.manifest_path, root.join("model_config.json"));
+        assert_eq!(probe.family, Some(crate::config::ModelFamily::ChineseClip));
+        assert_eq!(
+            probe.model_id.as_deref(),
+            Some("chinese-clip-vit-base-patch16")
+        );
+        assert_eq!(probe.embedding_dim, Some(512));
+        assert_eq!(probe.context_length, Some(52));
+        assert!(probe.missing_files.is_empty());
+        assert!(probe.error.is_none());
+    }
+
+    #[test]
+    fn loads_flat_fgclip_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("tokenizer.json"), "{}").unwrap();
+        fs::write(root.join("text_token_embedding.bin"), []).unwrap();
+        fs::write(root.join("vision_pos_embedding.bin"), []).unwrap();
+        fs::write(
+            root.join("model_config.json"),
+            r#"{
+                "format": "omni_flat_v1",
+                "schema_version": 1,
+                "family": "fg_clip",
+                "model_id": "fgclip2-base",
+                "model_revision": "test-flat",
+                "embedding_dim": 768,
+                "normalize_output": true,
+                "text": {
+                  "onnx": "text.onnx",
+                  "output_name": "text_features",
+                  "tokenizer": "tokenizer.json",
+                  "context_length": 64,
+                  "input": { "kind": "token_embeds" },
+                  "token_embedding": {
+                    "file": "text_token_embedding.bin",
+                    "dtype": "f16",
+                    "embedding_dim": 768
+                  }
+                },
+                "image": {
+                  "onnx": "visual.onnx",
+                  "output_name": "image_features",
+                  "preprocess": {
+                    "kind": "fgclip_patch_tokens",
+                    "patch_size": 16,
+                    "default_max_patches": 1024,
+                    "vision_pos_embedding": "vision_pos_embedding.bin"
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let bundle = ModelBundle::load_from_dir(root).unwrap();
+        assert_eq!(bundle.model_id(), "fgclip2-base");
+        assert_eq!(
+            bundle.info().model_family,
+            crate::config::ModelFamily::FgClip
+        );
+        assert_eq!(bundle.info().embedding_dim, 768);
+        assert_eq!(bundle.info().context_length, 64);
+        assert_eq!(bundle.manifest_path(), &root.join("model_config.json"));
+    }
+
+    #[test]
+    fn probes_flat_fgclip_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("tokenizer.json"), "{}").unwrap();
+        fs::write(root.join("text_token_embedding.bin"), []).unwrap();
+        fs::write(root.join("vision_pos_embedding.bin"), []).unwrap();
+        fs::write(
+            root.join("model_config.json"),
+            r#"{
+                "format": "omni_flat_v1",
+                "schema_version": 1,
+                "family": "fg_clip",
+                "model_id": "fgclip2-base",
+                "model_revision": "test-flat",
+                "embedding_dim": 768,
+                "normalize_output": true,
+                "text": {
+                  "onnx": "text.onnx",
+                  "output_name": "text_features",
+                  "tokenizer": "tokenizer.json",
+                  "context_length": 64,
+                  "input": { "kind": "token_embeds" },
+                  "token_embedding": {
+                    "file": "text_token_embedding.bin",
+                    "dtype": "f16",
+                    "embedding_dim": 768
+                  }
+                },
+                "image": {
+                  "onnx": "visual.onnx",
+                  "output_name": "image_features",
+                  "preprocess": {
+                    "kind": "fgclip_patch_tokens",
+                    "patch_size": 16,
+                    "default_max_patches": 1024,
+                    "vision_pos_embedding": "vision_pos_embedding.bin"
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let probe = probe_local_model_dir(root);
+        assert!(probe.ok);
+        assert_eq!(probe.manifest_path, root.join("model_config.json"));
         assert_eq!(probe.family, Some(crate::config::ModelFamily::FgClip));
         assert_eq!(probe.model_id.as_deref(), Some("fgclip2-base"));
-        assert_eq!(probe.model_revision.as_deref(), Some("2026-04-13"));
         assert_eq!(probe.embedding_dim, Some(768));
         assert_eq!(probe.context_length, Some(64));
         assert!(probe.missing_files.is_empty());
@@ -423,14 +568,117 @@ mod tests {
     }
 
     #[test]
-    fn probe_reports_missing_manifest() {
+    fn loads_flat_openclip_layout() {
         let dir = tempdir().unwrap();
-        let probe = probe_local_model_dir(dir.path());
+        let root = dir.path();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("tokenizer.json"), "{}").unwrap();
+        fs::write(
+            root.join("model_config.json"),
+            r#"{
+                "format": "omni_flat_v1",
+                "schema_version": 1,
+                "family": "open_clip",
+                "model_id": "timm/MobileCLIP2-S2-OpenCLIP",
+                "model_revision": "test-flat",
+                "embedding_dim": 512,
+                "normalize_output": true,
+                "text": {
+                  "onnx": "text.onnx",
+                  "output_name": "text_embeddings",
+                  "tokenizer": "tokenizer.json",
+                  "context_length": 77,
+                  "input": {
+                    "kind": "input_ids",
+                    "input_ids_name": "input_ids",
+                    "lower_case": false,
+                    "pad_id": 0
+                  }
+                },
+                "image": {
+                  "onnx": "visual.onnx",
+                  "output_name": "image_embeddings",
+                  "preprocess": {
+                    "kind": "clip_image",
+                    "image_size": 256,
+                    "resize_shortest_edge": 256,
+                    "crop": "center",
+                    "mean": [0.0, 0.0, 0.0],
+                    "std": [1.0, 1.0, 1.0]
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
 
-        assert!(!probe.ok);
-        assert_eq!(probe.source_kind, None);
-        assert_eq!(probe.family, None);
-        assert_eq!(probe.missing_files, vec![dir.path().join("manifest.json")]);
-        assert_eq!(probe.error.as_deref(), Some("missing manifest.json"));
+        let bundle = ModelBundle::load_from_dir(root).unwrap();
+        assert_eq!(bundle.model_id(), "timm/MobileCLIP2-S2-OpenCLIP");
+        assert_eq!(
+            bundle.info().model_family,
+            crate::config::ModelFamily::OpenClip
+        );
+        assert_eq!(bundle.info().embedding_dim, 512);
+        assert_eq!(bundle.info().context_length, 77);
+        assert_eq!(bundle.manifest_path(), &root.join("model_config.json"));
+    }
+
+    #[test]
+    fn probes_flat_openclip_layout() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("text.onnx"), []).unwrap();
+        fs::write(root.join("visual.onnx"), []).unwrap();
+        fs::write(root.join("tokenizer.json"), "{}").unwrap();
+        fs::write(
+            root.join("model_config.json"),
+            r#"{
+                "format": "omni_flat_v1",
+                "schema_version": 1,
+                "family": "open_clip",
+                "model_id": "timm/MobileCLIP2-S2-OpenCLIP",
+                "model_revision": "test-flat",
+                "embedding_dim": 512,
+                "normalize_output": true,
+                "text": {
+                  "onnx": "text.onnx",
+                  "output_name": "text_embeddings",
+                  "tokenizer": "tokenizer.json",
+                  "context_length": 77,
+                  "input": {
+                    "kind": "input_ids",
+                    "input_ids_name": "input_ids",
+                    "lower_case": false,
+                    "pad_id": 0
+                  }
+                },
+                "image": {
+                  "onnx": "visual.onnx",
+                  "output_name": "image_embeddings",
+                  "preprocess": {
+                    "kind": "clip_image",
+                    "image_size": 256,
+                    "resize_shortest_edge": 256,
+                    "crop": "center",
+                    "mean": [0.0, 0.0, 0.0],
+                    "std": [1.0, 1.0, 1.0]
+                  }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let probe = probe_local_model_dir(root);
+        assert!(probe.ok);
+        assert_eq!(probe.manifest_path, root.join("model_config.json"));
+        assert_eq!(probe.family, Some(crate::config::ModelFamily::OpenClip));
+        assert_eq!(
+            probe.model_id.as_deref(),
+            Some("timm/MobileCLIP2-S2-OpenCLIP")
+        );
+        assert_eq!(probe.embedding_dim, Some(512));
+        assert_eq!(probe.context_length, Some(77));
+        assert!(probe.missing_files.is_empty());
+        assert!(probe.error.is_none());
     }
 }

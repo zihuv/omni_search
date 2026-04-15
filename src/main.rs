@@ -7,9 +7,9 @@ use omni_search::{ModelBundle, OmniSearch, RuntimeConfig, top_k};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
     let bundle_dir =
-        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_bundle"));
+        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_flat"));
     let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
-    require_existing_dir("OMNI_BUNDLE_DIR", &bundle_dir, "model bundle")?;
+    require_existing_dir("OMNI_BUNDLE_DIR", &bundle_dir, "model directory")?;
     require_existing_dir("OMNI_SAMPLES_DIR", &samples_dir, "sample image directory")?;
     let args = env::args().skip(1).collect::<Vec<_>>();
     let (query, top_k_count, query_image_arg) = match args.as_slice() {
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .runtime_config(runtime.clone())
         .build()?;
 
-    println!("bundle: {}", bundle_dir.display());
+    println!("model_dir: {}", bundle_dir.display());
     println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
     println!(

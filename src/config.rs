@@ -11,6 +11,7 @@ use crate::error::Error;
 pub enum ModelFamily {
     FgClip,
     ChineseClip,
+    OpenClip,
 }
 
 impl fmt::Display for ModelFamily {
@@ -18,6 +19,7 @@ impl fmt::Display for ModelFamily {
         match self {
             Self::FgClip => f.write_str("fgclip"),
             Self::ChineseClip => f.write_str("chinese_clip"),
+            Self::OpenClip => f.write_str("open_clip"),
         }
     }
 }

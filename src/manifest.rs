@@ -61,6 +61,13 @@ pub(crate) enum TextInputConfig {
         #[serde(default)]
         token_type_ids_name: Option<String>,
     },
+    InputIds {
+        input_ids_name: String,
+        #[serde(default)]
+        lower_case: bool,
+        #[serde(default)]
+        pad_id: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -196,6 +203,43 @@ impl ModelManifest {
                     ));
                 }
             }
+            (
+                ModelFamily::OpenClip,
+                TextInputConfig::InputIds { input_ids_name, .. },
+                ImagePreprocessConfig::ClipImage {
+                    image_size,
+                    resize_shortest_edge,
+                    crop: _,
+                    mean,
+                    std,
+                },
+            ) => {
+                if input_ids_name.trim().is_empty() {
+                    return Err(Error::invalid_bundle(
+                        "input_ids input name cannot be empty",
+                    ));
+                }
+                if *image_size == 0 || *resize_shortest_edge == 0 {
+                    return Err(Error::invalid_bundle(
+                        "clip_image sizes must be greater than 0",
+                    ));
+                }
+                if mean.len() != 3 || std.len() != 3 {
+                    return Err(Error::invalid_bundle(
+                        "clip_image mean/std must contain exactly 3 values",
+                    ));
+                }
+                if std.iter().any(|value| value.abs() <= f32::EPSILON) {
+                    return Err(Error::invalid_bundle(
+                        "clip_image std values must be non-zero",
+                    ));
+                }
+                if self.text.token_embedding.is_some() {
+                    return Err(Error::invalid_bundle(
+                        "open clip manifest must not define text.token_embedding",
+                    ));
+                }
+            }
             (ModelFamily::FgClip, _, _) => {
                 return Err(Error::invalid_bundle(
                     "fgclip manifests require token_embeds text input and fgclip_patch_tokens image preprocess",
@@ -204,6 +248,11 @@ impl ModelManifest {
             (ModelFamily::ChineseClip, _, _) => {
                 return Err(Error::invalid_bundle(
                     "chinese_clip manifests require bert_like text input and clip_image image preprocess",
+                ));
+            }
+            (ModelFamily::OpenClip, _, _) => {
+                return Err(Error::invalid_bundle(
+                    "open_clip manifests require input_ids text input and clip_image image preprocess",
                 ));
             }
         }

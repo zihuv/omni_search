@@ -58,7 +58,8 @@ fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
 
 fn bundle_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     env_path("OMNI_TEST_BUNDLE_DIR").ok_or_else(|| {
-        "set OMNI_TEST_BUNDLE_DIR to a local model bundle before running this ignored test".into()
+        "set OMNI_TEST_BUNDLE_DIR to a local flat model directory before running this ignored test"
+            .into()
     })
 }
 
