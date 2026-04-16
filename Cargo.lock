@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "omni_search"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "image",
  "memmap2",
