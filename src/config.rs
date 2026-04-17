@@ -100,6 +100,11 @@ impl RuntimeConfigBuilder {
         self
     }
 
+    pub fn device(&mut self, val: RuntimeDevice) -> &mut Self {
+        self.config.device = val;
+        self
+    }
+
     pub fn inter_threads(&mut self, val: usize) -> &mut Self {
         self.config.inter_threads = Some(val);
         self
@@ -161,8 +166,31 @@ pub enum GraphOptimizationLevel {
 }
 
 #[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeDevice {
+    #[serde(alias = "Auto")]
+    Auto,
+    #[serde(alias = "Cpu")]
+    Cpu,
+    #[serde(alias = "Gpu")]
+    Gpu,
+}
+
+impl fmt::Display for RuntimeDevice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Cpu => f.write_str("cpu"),
+            Self::Gpu => f.write_str("gpu"),
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeConfig {
+    pub device: RuntimeDevice,
     pub intra_threads: usize,
     pub inter_threads: Option<usize>,
     pub fgclip_max_patches: Option<usize>,
@@ -173,6 +201,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            device: RuntimeDevice::Auto,
             intra_threads: std::thread::available_parallelism()
                 .map(|parallelism| parallelism.get())
                 .unwrap_or(4),
@@ -230,7 +259,9 @@ impl OmniSearchConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphOptimizationLevel, RuntimeConfig, RuntimeConfigBuilder, SessionPolicy};
+    use super::{
+        GraphOptimizationLevel, RuntimeConfig, RuntimeConfigBuilder, RuntimeDevice, SessionPolicy,
+    };
 
     #[test]
     fn runtime_builder_uses_defaults_when_fields_are_not_overridden() {
@@ -243,6 +274,7 @@ mod tests {
     #[test]
     fn runtime_builder_overrides_selected_fields_only() {
         let actual = RuntimeConfig::builder()
+            .device(RuntimeDevice::Gpu)
             .intra_threads(2)
             .inter_threads(1)
             .fgclip_max_patches(256)
@@ -251,6 +283,7 @@ mod tests {
             .build()
             .unwrap();
 
+        assert_eq!(actual.device, RuntimeDevice::Gpu);
         assert_eq!(actual.intra_threads, 2);
         assert_eq!(actual.inter_threads, Some(1));
         assert_eq!(actual.fgclip_max_patches, Some(256));
@@ -306,5 +339,14 @@ mod tests {
 
         assert_eq!(snake_case, GraphOptimizationLevel::Basic);
         assert_eq!(legacy_pascal_case, GraphOptimizationLevel::Basic);
+    }
+
+    #[test]
+    fn runtime_device_deserializes_snake_case_and_legacy_pascal_case() {
+        let snake_case: RuntimeDevice = serde_json::from_str(r#""gpu""#).unwrap();
+        let legacy_pascal_case: RuntimeDevice = serde_json::from_str(r#""Gpu""#).unwrap();
+
+        assert_eq!(snake_case, RuntimeDevice::Gpu);
+        assert_eq!(legacy_pascal_case, RuntimeDevice::Gpu);
     }
 }

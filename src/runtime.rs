@@ -60,6 +60,11 @@ impl OmniSearchBuilder {
         self
     }
 
+    pub fn device(&mut self, val: crate::config::RuntimeDevice) -> &mut Self {
+        self.runtime.device(val);
+        self
+    }
+
     pub fn intra_threads(&mut self, val: usize) -> &mut Self {
         self.runtime.intra_threads(val);
         self

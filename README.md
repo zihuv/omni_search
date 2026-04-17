@@ -27,10 +27,19 @@ Quickstart:
 - run `cargo run --bin omni_search --release -- "海边"` to scan all images with a custom query;
 - run `cargo run --bin omni_search --release -- "海边" 20` to print a different top-k;
 - run `cargo run --bin omni_search --release -- "海边" "/absolute/path/to/query.jpg"` to run `image_to_image` with a specific query image;
+- set `OMNI_DEVICE` to `auto`, `cpu`, or `gpu` to control execution provider selection; default is `auto`;
 - set `OMNI_INTRA_THREADS` / `OMNI_INTER_THREADS` to override ONNX Runtime thread counts when benchmarking or tuning;
 - set `OMNI_FGCLIP_MAX_PATCHES` to cap FG-CLIP2 image preprocessing at a smaller bucket without changing the exported model directory;
 - recommended `OMNI_FGCLIP_MAX_PATCHES` values are `128`, `256`, `576`, `784`, or `1024`;
 - run `cargo test --test quickstart -- --ignored --nocapture` to execute the smoke test after setting `OMNI_TEST_BUNDLE_DIR` and `OMNI_TEST_SAMPLE_IMAGE`.
+
+Device selection notes:
+
+- all current model families load standard ONNX graphs, so GPU support is determined by the ONNX Runtime execution provider rather than by a model-specific code path;
+- on Windows, `gpu` uses the DirectML execution provider;
+- on Apple Silicon/macOS, `gpu` is wired to the CoreML execution provider;
+- on Linux, the current crate build does not yet wire a GPU provider; AMD GPU support would require a dedicated ROCm or WebGPU path;
+- `auto` first tries the platform GPU provider and falls back to CPU if acceleration is unavailable.
 
 Legacy migration:
 
@@ -53,10 +62,11 @@ uv run D:\code\vl-embedding-test\export_fgclip2_flat.py --model-dir D:\models\fg
 Builder example:
 
 ```rust
-use omni_search::{GraphOptimizationLevel, OmniSearch, SessionPolicy};
+use omni_search::{GraphOptimizationLevel, OmniSearch, RuntimeDevice, SessionPolicy};
 
 let sdk = OmniSearch::builder()
     .from_local_model_dir("D:/models/fgclip2_flat")
+    .device(RuntimeDevice::Auto)
     .intra_threads(4)
     .fgclip_max_patches(256)
     .session_policy(SessionPolicy::SingleActive)

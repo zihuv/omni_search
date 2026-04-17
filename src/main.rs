@@ -2,7 +2,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omni_search::{ModelBundle, OmniSearch, RuntimeConfig, top_k};
+use omni_search::{ModelBundle, OmniSearch, RuntimeConfig, RuntimeDevice, top_k};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
@@ -55,8 +55,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
     println!(
-        "runtime: intra_threads={}, inter_threads={:?}, fgclip_max_patches={:?}",
-        runtime.intra_threads, runtime.inter_threads, runtime.fgclip_max_patches
+        "runtime: device={}, intra_threads={}, inter_threads={:?}, fgclip_max_patches={:?}",
+        runtime.device, runtime.intra_threads, runtime.inter_threads, runtime.fgclip_max_patches
     );
     println!("samples: {}", samples_dir.display());
     println!("images: {}", image_paths.len());
@@ -133,6 +133,9 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
     let mut builder = RuntimeConfig::builder();
+    if let Some(device) = env_runtime_device("OMNI_DEVICE")? {
+        builder.device(device);
+    }
     if let Some(intra_threads) = env_usize("OMNI_INTRA_THREADS")? {
         builder.intra_threads(intra_threads);
     }
@@ -143,6 +146,30 @@ fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>
         builder.fgclip_max_patches(fgclip_max_patches);
     }
     Ok(builder.build()?)
+}
+
+fn env_runtime_device(name: &str) -> Result<Option<RuntimeDevice>, Box<dyn std::error::Error>> {
+    let Some(value) = env::var_os(name) else {
+        return Ok(None);
+    };
+    let value = value
+        .into_string()
+        .map_err(|_| format!("{name} must be valid UTF-8"))?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let device = match value.to_ascii_lowercase().as_str() {
+        "auto" => RuntimeDevice::Auto,
+        "cpu" => RuntimeDevice::Cpu,
+        "gpu" => RuntimeDevice::Gpu,
+        _ => {
+            return Err(
+                format!("unsupported {name}='{value}', expected one of: auto, cpu, gpu").into(),
+            );
+        }
+    };
+    Ok(Some(device))
 }
 
 fn env_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error>> {

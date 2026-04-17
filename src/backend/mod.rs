@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use ndarray::ArrayD;
+use ort::ep;
 use ort::session::{Session, builder::GraphOptimizationLevel as OrtGraphOptimizationLevel};
 use tokenizers::decoders::wordpiece::WordPiece as WordPieceDecoder;
 use tokenizers::models::wordpiece::WordPiece;
@@ -16,7 +17,7 @@ use tokenizers::processors::bert::BertProcessing;
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
 use crate::bundle::{ModelBundle, ModelInfo};
-use crate::config::{GraphOptimizationLevel, ModelFamily, RuntimeConfig};
+use crate::config::{GraphOptimizationLevel, ModelFamily, RuntimeConfig, RuntimeDevice};
 use crate::embedding::Embedding;
 use crate::error::Error;
 use crate::runtime::RuntimeState;
@@ -294,6 +295,10 @@ fn normalize_vector(values: &mut [f32]) -> Result<(), Error> {
 fn load_session(model_path: &Path, runtime: &RuntimeConfig) -> Result<Session, Error> {
     let mut builder = Session::builder().map_err(Error::from_ort)?;
     builder = builder
+        .with_no_environment_execution_providers()
+        .map_err(Error::from_ort)?;
+    builder = configure_execution_provider(builder, runtime.device)?;
+    builder = builder
         .with_optimization_level(map_graph_optimization_level(
             runtime.graph_optimization_level,
         ))
@@ -312,6 +317,72 @@ fn load_session(model_path: &Path, runtime: &RuntimeConfig) -> Result<Session, E
             model_path.display()
         ))
     })
+}
+
+fn configure_execution_provider(
+    builder: ort::session::builder::SessionBuilder,
+    device: RuntimeDevice,
+) -> Result<ort::session::builder::SessionBuilder, Error> {
+    let providers = execution_providers_for(device)?;
+    builder
+        .with_execution_providers(providers)
+        .map_err(Error::from_ort)
+}
+
+fn execution_providers_for(
+    device: RuntimeDevice,
+) -> Result<Vec<ep::ExecutionProviderDispatch>, Error> {
+    let mut providers = Vec::new();
+    match device {
+        RuntimeDevice::Cpu => {
+            providers.push(ep::CPU::default().build().error_on_failure());
+        }
+        RuntimeDevice::Auto => {
+            append_platform_gpu_providers(&mut providers, false)?;
+            providers.push(ep::CPU::default().build().error_on_failure());
+        }
+        RuntimeDevice::Gpu => {
+            append_platform_gpu_providers(&mut providers, true)?;
+        }
+    }
+    Ok(providers)
+}
+
+fn append_platform_gpu_providers(
+    providers: &mut Vec<ep::ExecutionProviderDispatch>,
+    require_gpu: bool,
+) -> Result<(), Error> {
+    #[cfg(target_os = "windows")]
+    {
+        let provider = ep::DirectML::default().build();
+        providers.push(if require_gpu {
+            provider.error_on_failure()
+        } else {
+            provider.fail_silently()
+        });
+        return Ok(());
+    }
+
+    #[cfg(target_vendor = "apple")]
+    {
+        let provider = ep::CoreML::default().build();
+        providers.push(if require_gpu {
+            provider.error_on_failure()
+        } else {
+            provider.fail_silently()
+        });
+        return Ok(());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_vendor = "apple")))]
+    {
+        if require_gpu {
+            return Err(Error::ort(
+                "gpu execution is not configured for this platform in the current build; Windows uses DirectML, Apple uses CoreML, and Linux AMD would need a dedicated ROCm/WebGPU integration path",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn map_graph_optimization_level(level: GraphOptimizationLevel) -> OrtGraphOptimizationLevel {

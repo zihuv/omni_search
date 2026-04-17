@@ -16,7 +16,7 @@ categories = ["api-bindings", "computer-vision"]
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
 memmap2 = "0.9"
 ndarray = "0.17"
-ort = "2.0.0-rc.12"
+ort = { version = "2.0.0-rc.12", features = ["coreml", "directml"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"

@@ -11,7 +11,7 @@ mod score;
 pub use crate::bundle::{LocalModelDirProbe, ModelBundle, ModelInfo, probe_local_model_dir};
 pub use crate::config::{
     GraphOptimizationLevel, ModelConfig, ModelFamily, ModelSource, ModelSourceKind,
-    OmniSearchConfig, RuntimeConfig, RuntimeConfigBuilder, SessionPolicy,
+    OmniSearchConfig, RuntimeConfig, RuntimeConfigBuilder, RuntimeDevice, SessionPolicy,
 };
 pub use crate::embedding::Embedding;
 pub use crate::error::Error;
