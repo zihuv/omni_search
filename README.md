@@ -18,8 +18,11 @@ Supported families:
 
 The published crate does not bundle ONNX models or sample images. Point it at your own local assets with `OMNI_BUNDLE_DIR` and `OMNI_SAMPLES_DIR`.
 
+The CLI binaries automatically load a repo-root `.env` file when present. Existing shell environment variables still win, so `.env` works as a local default layer.
+
 Quickstart:
 
+- create a `.env` from `.env.example` or edit the existing local `.env` defaults when you want to pin a bundle, sample directory, or test fixtures;
 - set `OMNI_BUNDLE_DIR` to a local model directory that contains `model_config.json` plus flat root-level assets;
 - set `OMNI_SAMPLES_DIR` to a directory containing one or more `.jpg`, `.jpeg`, `.png`, `.webp`, or `.bmp` images;
 - build SDK instances with `OmniSearch::builder()` when you only want to override part of the runtime config and keep the rest at defaults;
@@ -28,15 +31,25 @@ Quickstart:
 - run `cargo run --bin omni_search --release -- "海边" 20` to print a different top-k;
 - run `cargo run --bin omni_search --release -- "海边" "/absolute/path/to/query.jpg"` to run `image_to_image` with a specific query image;
 - set `OMNI_DEVICE` to `auto`, `cpu`, or `gpu` to control execution provider selection; default is `auto`;
-- set `OMNI_INTRA_THREADS` / `OMNI_INTER_THREADS` to override ONNX Runtime thread counts when benchmarking or tuning;
+- the default `RuntimeConfig::intra_threads` value also resolves to the host physical core count;
+- set `OMNI_INTRA_THREADS` to `auto` or a positive integer to override the ONNX Runtime intra-op thread count; `auto` resolves to the host physical core count;
+- set `OMNI_INTER_THREADS` to a positive integer when you need to override the ONNX Runtime inter-op thread count while benchmarking or tuning;
 - set `OMNI_FGCLIP_MAX_PATCHES` to cap FG-CLIP2 image preprocessing at a smaller bucket without changing the exported model directory;
 - recommended `OMNI_FGCLIP_MAX_PATCHES` values are `128`, `256`, `576`, `784`, or `1024`;
 - run `cargo test --test quickstart -- --ignored --nocapture` to execute the smoke test after setting `OMNI_TEST_BUNDLE_DIR` and `OMNI_TEST_SAMPLE_IMAGE`.
 
+Example `.env`:
+
+```dotenv
+OMNI_DEVICE=auto
+OMNI_BUNDLE_DIR=models/fgclip2_flat
+OMNI_SAMPLES_DIR=samples
+```
+
 Device selection notes:
 
 - all current model families load standard ONNX graphs, so GPU support is determined by the ONNX Runtime execution provider rather than by a model-specific code path;
-- on Windows, `gpu` uses the DirectML execution provider;
+- on Windows, `gpu` uses the DirectML execution provider and does not require CUDA;
 - on Apple Silicon/macOS, `gpu` is wired to the CoreML execution provider;
 - on Linux, the current crate build does not yet wire a GPU provider; AMD GPU support would require a dedicated ROCm or WebGPU path;
 - `auto` first tries the platform GPU provider and falls back to CPU if acceleration is unavailable.

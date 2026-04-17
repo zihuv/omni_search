@@ -202,9 +202,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             device: RuntimeDevice::Auto,
-            intra_threads: std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get())
-                .unwrap_or(4),
+            intra_threads: crate::runtime_env::default_intra_threads(),
             inter_threads: None,
             fgclip_max_patches: None,
             session_policy: SessionPolicy::SingleActive,

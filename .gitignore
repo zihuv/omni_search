@@ -2,3 +2,5 @@
 /models/
 /samples/
 /tmp/
+.env
+.env.local

@@ -40,6 +40,6 @@ This document summarizes the current CPU-side performance and memory measurement
 ## Related Runtime Knobs
 
 - `OMNI_DEVICE`: `auto` (default), `cpu`, or `gpu`; on Windows `gpu` means DirectML
-- `OMNI_INTRA_THREADS`: override ORT intra-op thread count
+- `OMNI_INTRA_THREADS`: override ORT intra-op thread count with `auto` or a positive integer; `auto` resolves to the host physical core count
 - `OMNI_INTER_THREADS`: override ORT inter-op thread count
 - `OMNI_FGCLIP_MAX_PATCHES`: cap `FGCLIP2` image preprocessing to `128`, `256`, `576`, `784`, or `1024`

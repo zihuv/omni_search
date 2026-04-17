@@ -2,12 +2,14 @@ use std::fs;
 use std::path::PathBuf;
 
 use omni_search::{
-    ModelBundle, OmniSearch, cosine_similarity, probe_local_model_dir, score_embeddings, top_k,
+    ModelBundle, OmniSearch, cosine_similarity, env_path_resolved, load_dotenv_from,
+    probe_local_model_dir, score_embeddings, top_k,
 };
 
 #[test]
 #[ignore = "requires local OMNI_TEST_BUNDLE_DIR and OMNI_TEST_SAMPLE_IMAGE fixtures"]
 fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    load_dotenv_from(project_root())?;
     let bundle_dir = bundle_dir()?;
     let image_path = sample_image()?;
 
@@ -57,14 +59,14 @@ fn fgclip_quickstart_smoke() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn bundle_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    env_path("OMNI_TEST_BUNDLE_DIR").ok_or_else(|| {
+    env_path_resolved("OMNI_TEST_BUNDLE_DIR", project_root()).ok_or_else(|| {
         "set OMNI_TEST_BUNDLE_DIR to a local flat model directory before running this ignored test"
             .into()
     })
 }
 
 fn sample_image() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let path = env_path("OMNI_TEST_SAMPLE_IMAGE").ok_or_else(|| {
+    let path = env_path_resolved("OMNI_TEST_SAMPLE_IMAGE", project_root()).ok_or_else(|| {
         "set OMNI_TEST_SAMPLE_IMAGE to a local image before running this ignored test".to_owned()
     })?;
     if !path.is_file() {
@@ -77,8 +79,6 @@ fn sample_image() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(path)
 }
 
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }

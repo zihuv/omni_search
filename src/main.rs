@@ -1,17 +1,20 @@
-use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use omni_search::{ModelBundle, OmniSearch, RuntimeConfig, RuntimeDevice, top_k};
+use omni_search::{
+    ModelBundle, OmniSearch, env_path_resolved, load_dotenv_from, runtime_config_from_env, top_k,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = project_root();
-    let bundle_dir =
-        env_path("OMNI_BUNDLE_DIR").unwrap_or_else(|| root.join("models/fgclip2_flat"));
-    let samples_dir = env_path("OMNI_SAMPLES_DIR").unwrap_or_else(|| root.join("samples"));
+    load_dotenv_from(&root)?;
+    let bundle_dir = env_path_resolved("OMNI_BUNDLE_DIR", &root)
+        .unwrap_or_else(|| root.join("models/fgclip2_flat"));
+    let samples_dir =
+        env_path_resolved("OMNI_SAMPLES_DIR", &root).unwrap_or_else(|| root.join("samples"));
     require_existing_dir("OMNI_BUNDLE_DIR", &bundle_dir, "model directory")?;
     require_existing_dir("OMNI_SAMPLES_DIR", &samples_dir, "sample image directory")?;
-    let args = env::args().skip(1).collect::<Vec<_>>();
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
     let (query, top_k_count, query_image_arg) = match args.as_slice() {
         [] => ("山".to_owned(), 10usize, None),
         [query] => (query.clone(), 10usize, None),
@@ -123,72 +126,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
-fn env_path(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn runtime_config_from_env() -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
-    let mut builder = RuntimeConfig::builder();
-    if let Some(device) = env_runtime_device("OMNI_DEVICE")? {
-        builder.device(device);
-    }
-    if let Some(intra_threads) = env_usize("OMNI_INTRA_THREADS")? {
-        builder.intra_threads(intra_threads);
-    }
-    if let Some(inter_threads) = env_usize("OMNI_INTER_THREADS")? {
-        builder.inter_threads(inter_threads);
-    }
-    if let Some(fgclip_max_patches) = env_usize("OMNI_FGCLIP_MAX_PATCHES")? {
-        builder.fgclip_max_patches(fgclip_max_patches);
-    }
-    Ok(builder.build()?)
-}
-
-fn env_runtime_device(name: &str) -> Result<Option<RuntimeDevice>, Box<dyn std::error::Error>> {
-    let Some(value) = env::var_os(name) else {
-        return Ok(None);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| format!("{name} must be valid UTF-8"))?;
-    let value = value.trim();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    let device = match value.to_ascii_lowercase().as_str() {
-        "auto" => RuntimeDevice::Auto,
-        "cpu" => RuntimeDevice::Cpu,
-        "gpu" => RuntimeDevice::Gpu,
-        _ => {
-            return Err(
-                format!("unsupported {name}='{value}', expected one of: auto, cpu, gpu").into(),
-            );
-        }
-    };
-    Ok(Some(device))
-}
-
-fn env_usize(name: &str) -> Result<Option<usize>, Box<dyn std::error::Error>> {
-    let Some(value) = env::var_os(name) else {
-        return Ok(None);
-    };
-    let value = value
-        .into_string()
-        .map_err(|_| format!("{name} must be valid UTF-8"))?;
-    if value.trim().is_empty() {
-        return Ok(None);
-    }
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|error| format!("failed to parse {name}='{value}' as usize: {error}"))?;
-    if parsed == 0 {
-        return Err(format!("{name} must be greater than 0").into());
-    }
-    Ok(Some(parsed))
 }
 
 fn list_images(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {

@@ -5,6 +5,7 @@ use std::time::Instant;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use ndarray::{Array, ArrayD, IxDyn};
+use omni_search::{default_intra_threads, env_intra_threads, env_path_resolved, load_dotenv_from};
 use ort::session::Session;
 use ort::value::TensorRef;
 use serde::Serialize;
@@ -29,22 +30,21 @@ struct AvgMs {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    load_dotenv_from(&root)?;
     let image_path = PathBuf::from(
-        std::env::var_os("OMNI_IMAGE_PATH")
-            .unwrap_or_else(|| "D:\\code\\omni_search\\samples\\pic1.jpg".into()),
+        env_path_resolved("OMNI_IMAGE_PATH", &root)
+            .unwrap_or_else(|| root.join("samples/pic1.jpg")),
     );
     let model_path = PathBuf::from(
-        std::env::var_os("OMNI_IMAGE_ONNX")
-            .unwrap_or_else(|| {
-                "D:\\code\\vl-embedding-test\\artifacts\\chinese-clip-vit-base-patch16\\onnx\\vit-b-16.img.fp32.onnx"
-                    .into()
-            }),
+        env_path_resolved("OMNI_IMAGE_ONNX", &root).unwrap_or_else(|| {
+            PathBuf::from(
+                "D:\\code\\vl-embedding-test\\artifacts\\chinese-clip-vit-base-patch16\\onnx\\vit-b-16.img.fp32.onnx",
+            )
+        }),
     );
-    let intra_threads = std::env::var("OMNI_INTRA_THREADS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(4);
+    let intra_threads =
+        env_intra_threads("OMNI_INTRA_THREADS")?.unwrap_or_else(default_intra_threads);
     let repeats = std::env::var("OMNI_REPEATS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
