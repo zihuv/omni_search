@@ -1,7 +1,7 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
-use crate::config::{RuntimeConfig, RuntimeDevice};
+use crate::config::{ProviderPolicy, RuntimeConfig, RuntimeDevice};
 use crate::error::Error;
 
 const FALLBACK_THREAD_COUNT: usize = 4;
@@ -72,6 +72,23 @@ pub fn env_runtime_device(name: &str) -> Result<Option<RuntimeDevice>, Error> {
     Ok(Some(device))
 }
 
+pub fn env_provider_policy(name: &str) -> Result<Option<ProviderPolicy>, Error> {
+    let Some(value) = env_string(name)? else {
+        return Ok(None);
+    };
+    let policy = match value.to_ascii_lowercase().as_str() {
+        "auto" => ProviderPolicy::Auto,
+        "interactive" => ProviderPolicy::Interactive,
+        "service" => ProviderPolicy::Service,
+        _ => {
+            return Err(Error::invalid_config(format!(
+                "unsupported {name}='{value}', expected one of: auto, interactive, service"
+            )));
+        }
+    };
+    Ok(Some(policy))
+}
+
 pub fn env_intra_threads(name: &str) -> Result<Option<usize>, Error> {
     let Some(value) = env_string(name)? else {
         return Ok(None);
@@ -90,6 +107,9 @@ pub fn runtime_config_from_env() -> Result<RuntimeConfig, Error> {
     let mut builder = RuntimeConfig::builder();
     if let Some(device) = env_runtime_device("OMNI_DEVICE")? {
         builder.device(device);
+    }
+    if let Some(policy) = env_provider_policy("OMNI_PROVIDER_POLICY")? {
+        builder.provider_policy(policy);
     }
     if let Some(intra_threads) = env_intra_threads("OMNI_INTRA_THREADS")? {
         builder.intra_threads(intra_threads);
@@ -143,9 +163,10 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        default_intra_threads, env_path_resolved, parse_intra_threads, parse_positive_usize,
-        physical_core_count,
+        default_intra_threads, env_path_resolved, env_provider_policy, parse_intra_threads,
+        parse_positive_usize, physical_core_count,
     };
+    use crate::config::ProviderPolicy;
 
     #[test]
     fn default_intra_threads_is_always_positive() {
@@ -170,6 +191,20 @@ mod tests {
             parse_intra_threads("OMNI_INTRA_THREADS", "auto").unwrap(),
             default_intra_threads()
         );
+    }
+
+    #[test]
+    fn env_provider_policy_accepts_interactive() {
+        let parsed = {
+            unsafe {
+                std::env::set_var("OMNI_PROVIDER_POLICY_TEST", "interactive");
+            }
+            env_provider_policy("OMNI_PROVIDER_POLICY_TEST").unwrap()
+        };
+        assert_eq!(parsed, Some(ProviderPolicy::Interactive));
+        unsafe {
+            std::env::remove_var("OMNI_PROVIDER_POLICY_TEST");
+        }
     }
 
     #[test]

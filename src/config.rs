@@ -105,6 +105,11 @@ impl RuntimeConfigBuilder {
         self
     }
 
+    pub fn provider_policy(&mut self, val: ProviderPolicy) -> &mut Self {
+        self.config.provider_policy = val;
+        self
+    }
+
     pub fn inter_threads(&mut self, val: usize) -> &mut Self {
         self.config.inter_threads = Some(val);
         self
@@ -188,9 +193,32 @@ impl fmt::Display for RuntimeDevice {
 }
 
 #[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderPolicy {
+    #[serde(alias = "Auto")]
+    Auto,
+    #[serde(alias = "Interactive")]
+    Interactive,
+    #[serde(alias = "Service")]
+    Service,
+}
+
+impl fmt::Display for ProviderPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Interactive => f.write_str("interactive"),
+            Self::Service => f.write_str("service"),
+        }
+    }
+}
+
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeConfig {
     pub device: RuntimeDevice,
+    pub provider_policy: ProviderPolicy,
     pub intra_threads: usize,
     pub inter_threads: Option<usize>,
     pub fgclip_max_patches: Option<usize>,
@@ -202,6 +230,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             device: RuntimeDevice::Auto,
+            provider_policy: ProviderPolicy::Auto,
             intra_threads: crate::runtime_env::default_intra_threads(),
             inter_threads: None,
             fgclip_max_patches: None,
@@ -258,7 +287,8 @@ impl OmniSearchConfig {
 #[cfg(test)]
 mod tests {
     use super::{
-        GraphOptimizationLevel, RuntimeConfig, RuntimeConfigBuilder, RuntimeDevice, SessionPolicy,
+        GraphOptimizationLevel, ProviderPolicy, RuntimeConfig, RuntimeConfigBuilder, RuntimeDevice,
+        SessionPolicy,
     };
 
     #[test]
@@ -273,6 +303,7 @@ mod tests {
     fn runtime_builder_overrides_selected_fields_only() {
         let actual = RuntimeConfig::builder()
             .device(RuntimeDevice::Gpu)
+            .provider_policy(ProviderPolicy::Interactive)
             .intra_threads(2)
             .inter_threads(1)
             .fgclip_max_patches(256)
@@ -282,6 +313,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(actual.device, RuntimeDevice::Gpu);
+        assert_eq!(actual.provider_policy, ProviderPolicy::Interactive);
         assert_eq!(actual.intra_threads, 2);
         assert_eq!(actual.inter_threads, Some(1));
         assert_eq!(actual.fgclip_max_patches, Some(256));
@@ -346,5 +378,14 @@ mod tests {
 
         assert_eq!(snake_case, RuntimeDevice::Gpu);
         assert_eq!(legacy_pascal_case, RuntimeDevice::Gpu);
+    }
+
+    #[test]
+    fn provider_policy_deserializes_snake_case_and_legacy_pascal_case() {
+        let snake_case: ProviderPolicy = serde_json::from_str(r#""interactive""#).unwrap();
+        let legacy_pascal_case: ProviderPolicy = serde_json::from_str(r#""Interactive""#).unwrap();
+
+        assert_eq!(snake_case, ProviderPolicy::Interactive);
+        assert_eq!(legacy_pascal_case, ProviderPolicy::Interactive);
     }
 }

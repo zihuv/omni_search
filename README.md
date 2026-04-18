@@ -8,6 +8,7 @@ Current scope:
 - compute text embeddings;
 - compute image embeddings;
 - compare embeddings with cosine similarity;
+- expose runtime snapshots with requested device, planned providers, registered providers, and effective provider;
 - manually unload ONNX Runtime sessions.
 
 Supported families:
@@ -31,6 +32,8 @@ Quickstart:
 - run `cargo run --bin omni_search --release -- "海边" 20` to print a different top-k;
 - run `cargo run --bin omni_search --release -- "海边" "/absolute/path/to/query.jpg"` to run `image_to_image` with a specific query image;
 - set `OMNI_DEVICE` to `auto`, `cpu`, or `gpu` to control execution provider selection; default is `auto`;
+- set `OMNI_PROVIDER_POLICY` to `auto`, `interactive`, or `service` when you want to change GPU provider priority without pinning a single provider;
+- call `sdk.runtime_snapshot()` when you need to inspect or display the current execution provider state;
 - the default `RuntimeConfig::intra_threads` value also resolves to the host physical core count;
 - set `OMNI_INTRA_THREADS` to `auto` or a positive integer to override the ONNX Runtime intra-op thread count; `auto` resolves to the host physical core count;
 - set `OMNI_INTER_THREADS` to a positive integer when you need to override the ONNX Runtime inter-op thread count while benchmarking or tuning;
@@ -42,6 +45,7 @@ Example `.env`:
 
 ```dotenv
 OMNI_DEVICE=auto
+OMNI_PROVIDER_POLICY=auto
 OMNI_BUNDLE_DIR=models/fgclip2_flat
 OMNI_SAMPLES_DIR=samples
 ```
@@ -49,10 +53,16 @@ OMNI_SAMPLES_DIR=samples
 Device selection notes:
 
 - all current model families load standard ONNX graphs, so GPU support is determined by the ONNX Runtime execution provider rather than by a model-specific code path;
-- on Windows, `gpu` uses the DirectML execution provider and does not require CUDA;
+- the default build keeps Windows `DirectML` and Apple `CoreML` enabled;
+- enable `cargo build --features nvidia` when you want `TensorRT -> CUDA` ahead of the platform fallback provider on supported Windows/Linux x64 targets;
+- `OMNI_PROVIDER_POLICY=service` prefers steady-state throughput and currently tries `TensorRT -> CUDA -> DirectML -> CPU` on Windows with `--features nvidia`;
+- `OMNI_PROVIDER_POLICY=interactive` prefers lower warmup cost and currently tries `CUDA -> DirectML -> TensorRT -> CPU` on Windows with `--features nvidia`;
+- `OMNI_FORCE_PROVIDER` remains available as a diagnostics-only override when you need to pin one execution provider for benchmarking or debugging;
 - on Apple Silicon/macOS, `gpu` is wired to the CoreML execution provider;
 - on Linux, the current crate build does not yet wire a GPU provider; AMD GPU support would require a dedicated ROCm or WebGPU path;
-- `auto` first tries the platform GPU provider and falls back to CPU if acceleration is unavailable.
+- `auto` first tries the configured GPU chain and falls back to CPU if acceleration is unavailable;
+- `gpu` requires at least one GPU execution provider to register successfully; it does not silently fall back to CPU;
+- the Windows build output includes `DirectML.dll`; application packaging should ship that file with the executable.
 
 Legacy migration:
 
@@ -75,14 +85,21 @@ uv run D:\code\vl-embedding-test\export_fgclip2_flat.py --model-dir D:\models\fg
 Builder example:
 
 ```rust
-use omni_search::{GraphOptimizationLevel, OmniSearch, RuntimeDevice, SessionPolicy};
+use omni_search::{
+    GraphOptimizationLevel, OmniSearch, ProviderPolicy, RuntimeDevice, SessionPolicy,
+};
 
 let sdk = OmniSearch::builder()
     .from_local_model_dir("D:/models/fgclip2_flat")
     .device(RuntimeDevice::Auto)
+    .provider_policy(ProviderPolicy::Service)
     .intra_threads(4)
     .fgclip_max_patches(256)
     .session_policy(SessionPolicy::SingleActive)
     .graph_optimization_level(GraphOptimizationLevel::All)
     .build()?;
+
+let snapshot = sdk.runtime_snapshot();
+println!("mode: {:?}", snapshot.summary.mode);
+println!("provider: {:?}", snapshot.summary.effective_provider);
 ```

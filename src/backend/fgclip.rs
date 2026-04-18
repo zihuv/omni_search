@@ -9,7 +9,8 @@ use ort::value::TensorRef;
 use tokenizers::{Encoding, Tokenizer};
 
 use crate::backend::{
-    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer, single_embedding,
+    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer,
+    runtime_snapshot_for_sessions, single_embedding,
 };
 use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{RuntimeConfig, SessionPolicy};
@@ -20,10 +21,11 @@ use crate::preprocess::fgclip::{
     build_positional_embedding, determine_max_patches, preprocess_image, read_f32_file,
     stack_attention_masks, stack_f32_batches, stack_pixel_values,
 };
-use crate::runtime::RuntimeState;
+use crate::runtime::{RuntimeSnapshot, RuntimeState};
 
 pub(crate) struct FgClipBackend {
     info: ModelInfo,
+    runtime: RuntimeConfig,
     normalize_output: bool,
     session_policy: SessionPolicy,
     tokenizer: Tokenizer,
@@ -117,6 +119,7 @@ impl FgClipBackend {
 
         Ok(Self {
             info: bundle.info().clone(),
+            runtime: runtime.clone(),
             normalize_output: bundle.info().normalize_output,
             session_policy: runtime.session_policy,
             tokenizer,
@@ -399,6 +402,10 @@ impl EmbeddingBackend for FgClipBackend {
             last_text_used_at: self.text_session.last_used_at(),
             last_image_used_at: self.image_session.last_used_at(),
         }
+    }
+
+    fn runtime_snapshot(&self) -> RuntimeSnapshot {
+        runtime_snapshot_for_sessions(&self.runtime, &self.text_session, &self.image_session)
     }
 }
 

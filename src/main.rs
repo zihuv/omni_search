@@ -58,8 +58,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("family: {model_family}");
     println!("model: {:?}", bundle.info());
     println!(
-        "runtime: device={}, intra_threads={}, inter_threads={:?}, fgclip_max_patches={:?}",
-        runtime.device, runtime.intra_threads, runtime.inter_threads, runtime.fgclip_max_patches
+        "runtime: device={}, provider_policy={}, intra_threads={}, inter_threads={:?}, fgclip_max_patches={:?}",
+        runtime.device,
+        runtime.provider_policy,
+        runtime.intra_threads,
+        runtime.inter_threads,
+        runtime.fgclip_max_patches
     );
     println!("samples: {}", samples_dir.display());
     println!("images: {}", image_paths.len());

@@ -6,7 +6,8 @@ use ort::value::TensorRef;
 use tokenizers::{Encoding, Tokenizer};
 
 use crate::backend::{
-    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer, single_embedding,
+    EmbeddingBackend, LazySession, embeddings_from_output, load_tokenizer,
+    runtime_snapshot_for_sessions, single_embedding,
 };
 use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{RuntimeConfig, SessionPolicy};
@@ -16,10 +17,11 @@ use crate::manifest::{ImagePreprocessConfig, TextInputConfig};
 use crate::preprocess::clip_image::{
     ClipImagePreprocessConfig, preprocess_image, stack_image_batches,
 };
-use crate::runtime::RuntimeState;
+use crate::runtime::{RuntimeSnapshot, RuntimeState};
 
 pub(crate) struct ChineseClipBackend {
     info: ModelInfo,
+    runtime: RuntimeConfig,
     normalize_output: bool,
     session_policy: SessionPolicy,
     tokenizer: Tokenizer,
@@ -80,6 +82,7 @@ impl ChineseClipBackend {
         };
         Ok(Self {
             info: bundle.info().clone(),
+            runtime: runtime.clone(),
             normalize_output: bundle.info().normalize_output,
             session_policy: runtime.session_policy,
             tokenizer,
@@ -285,6 +288,10 @@ impl EmbeddingBackend for ChineseClipBackend {
             last_text_used_at: self.text_session.last_used_at(),
             last_image_used_at: self.image_session.last_used_at(),
         }
+    }
+
+    fn runtime_snapshot(&self) -> RuntimeSnapshot {
+        runtime_snapshot_for_sessions(&self.runtime, &self.text_session, &self.image_session)
     }
 }
 

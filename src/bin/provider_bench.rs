@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use omni_search::{
-    ModelBundle, OmniSearch, RuntimeConfig, env_path_resolved, load_dotenv_from,
+    ModelBundle, OmniSearch, RuntimeConfig, RuntimeSnapshot, env_path_resolved, load_dotenv_from,
     runtime_config_from_env,
 };
 use serde::Serialize;
@@ -15,22 +15,12 @@ struct Output {
     family: String,
     model_id: String,
     repeats: usize,
+    text_count: usize,
+    image_count: usize,
+    forced_provider: Option<String>,
     runtime: RuntimeSummary,
-    texts: Vec<TextEmbedding>,
-    images: Vec<ImageEmbedding>,
+    snapshot: RuntimeSnapshot,
     timing_ms: TimingMs,
-}
-
-#[derive(Serialize)]
-struct TextEmbedding {
-    text: String,
-    embedding: Vec<f32>,
-}
-
-#[derive(Serialize)]
-struct ImageEmbedding {
-    path: String,
-    embedding: Vec<f32>,
 }
 
 #[derive(Serialize)]
@@ -81,31 +71,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bundle = ModelBundle::load_from_dir(&bundle_dir)?;
     let model_id = bundle.info().model_id.clone();
     let runtime = runtime_config_from_env()?;
+    let forced_provider = env::var("OMNI_FORCE_PROVIDER")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
 
     let sdk = new_sdk(&bundle_dir, runtime.clone())?;
     sdk.preload_text()?;
     sdk.preload_image()?;
-
-    let text_embeddings = texts
-        .iter()
-        .map(|text| {
-            let embedding = sdk.embed_text(text)?;
-            Ok(TextEmbedding {
-                text: text.clone(),
-                embedding: embedding.as_slice().to_vec(),
-            })
-        })
-        .collect::<Result<Vec<_>, omni_search::Error>>()?;
-    let image_embeddings = image_paths
-        .iter()
-        .map(|path| {
-            let embedding = sdk.embed_image_path(path)?;
-            Ok(ImageEmbedding {
-                path: path.display().to_string(),
-                embedding: embedding.as_slice().to_vec(),
-            })
-        })
-        .collect::<Result<Vec<_>, omni_search::Error>>()?;
+    let snapshot = sdk.runtime_snapshot();
 
     let cold_text = {
         let sdk = new_sdk(&bundle_dir, runtime.clone())?;
@@ -155,6 +129,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         family: bundle.info().model_family.to_string(),
         model_id,
         repeats,
+        text_count: texts.len(),
+        image_count: image_paths.len(),
+        forced_provider,
         runtime: RuntimeSummary {
             device: runtime.device.to_string(),
             provider_policy: runtime.provider_policy.to_string(),
@@ -162,8 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             inter_threads: runtime.inter_threads,
             fgclip_max_patches: runtime.fgclip_max_patches,
         },
-        texts: text_embeddings,
-        images: image_embeddings,
+        snapshot,
         timing_ms: TimingMs {
             cold_text,
             cold_image,

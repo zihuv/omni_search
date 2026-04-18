@@ -12,6 +12,10 @@ documentation = "https://docs.rs/omni_search"
 keywords = ["embedding", "multimodal", "onnx", "search", "ort"]
 categories = ["api-bindings", "computer-vision"]
 
+[features]
+default = []
+nvidia = ["ort/cuda", "ort/tensorrt"]
+
 [dependencies]
 dotenvy = "0.15.7"
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
