@@ -806,15 +806,57 @@ fn map_graph_optimization_level(level: GraphOptimizationLevel) -> OrtGraphOptimi
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::fs;
     use std::sync::Mutex;
 
     use tempfile::tempdir;
 
-    use super::{ExecutionProviderKind, load_tokenizer, planned_provider_kinds};
+    use super::{
+        ExecutionProviderKind, FORCE_PROVIDER_ENV, load_tokenizer, planned_provider_kinds,
+    };
     use crate::config::{RuntimeConfig, RuntimeDevice};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set(key: &'static str, value: Option<&str>) -> Self {
+            let original = std::env::var_os(key);
+            match value {
+                Some(value) => unsafe {
+                    std::env::set_var(key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(key);
+                },
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe {
+                    std::env::set_var(self.key, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.key);
+                },
+            }
+        }
+    }
+
+    fn with_force_provider_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = ScopedEnvVar::set(FORCE_PROVIDER_ENV, value);
+        f()
+    }
 
     #[test]
     fn loads_wordpiece_vocab_txt() {
@@ -832,88 +874,91 @@ mod tests {
 
     #[test]
     fn cpu_mode_only_plans_cpu_provider() {
-        assert_eq!(
-            planned_provider_kinds(
-                &RuntimeConfig::builder()
-                    .device(RuntimeDevice::Cpu)
-                    .build()
-                    .unwrap()
-            ),
-            vec![ExecutionProviderKind::Cpu]
-        );
+        with_force_provider_env(None, || {
+            assert_eq!(
+                planned_provider_kinds(
+                    &RuntimeConfig::builder()
+                        .device(RuntimeDevice::Cpu)
+                        .build()
+                        .unwrap()
+                ),
+                vec![ExecutionProviderKind::Cpu]
+            );
+        });
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn force_provider_env_overrides_default_plan() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe {
-            std::env::set_var("OMNI_FORCE_PROVIDER", "directml");
-        }
-
-        let planned = planned_provider_kinds(&RuntimeConfig::default());
-        assert_eq!(planned, vec![ExecutionProviderKind::DirectMl]);
-
-        unsafe {
-            std::env::remove_var("OMNI_FORCE_PROVIDER");
-        }
+        with_force_provider_env(Some("directml"), || {
+            let planned = planned_provider_kinds(&RuntimeConfig::default());
+            assert_eq!(planned, vec![ExecutionProviderKind::DirectMl]);
+        });
     }
 
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_auto_plan_keeps_directml_before_cpu() {
-        let planned = planned_provider_kinds(&RuntimeConfig::default());
-        assert_eq!(planned.last(), Some(&ExecutionProviderKind::Cpu));
-        assert!(planned.contains(&ExecutionProviderKind::DirectMl));
+        with_force_provider_env(None, || {
+            let planned = planned_provider_kinds(&RuntimeConfig::default());
+            assert_eq!(planned.last(), Some(&ExecutionProviderKind::Cpu));
+            assert!(planned.contains(&ExecutionProviderKind::DirectMl));
+        });
     }
 
     #[cfg(all(target_os = "windows", feature = "nvidia"))]
     #[test]
     fn windows_interactive_plan_prefers_cuda_and_directml_before_tensorrt() {
-        let planned = planned_provider_kinds(
-            &RuntimeConfig::builder()
-                .provider_policy(crate::config::ProviderPolicy::Interactive)
-                .build()
-                .unwrap(),
-        );
+        with_force_provider_env(None, || {
+            let planned = planned_provider_kinds(
+                &RuntimeConfig::builder()
+                    .provider_policy(crate::config::ProviderPolicy::Interactive)
+                    .build()
+                    .unwrap(),
+            );
 
-        assert_eq!(
-            planned,
-            vec![
-                ExecutionProviderKind::Cuda,
-                ExecutionProviderKind::DirectMl,
-                ExecutionProviderKind::TensorRt,
-                ExecutionProviderKind::Cpu,
-            ]
-        );
+            assert_eq!(
+                planned,
+                vec![
+                    ExecutionProviderKind::Cuda,
+                    ExecutionProviderKind::DirectMl,
+                    ExecutionProviderKind::TensorRt,
+                    ExecutionProviderKind::Cpu,
+                ]
+            );
+        });
     }
 
     #[cfg(all(target_os = "windows", feature = "nvidia"))]
     #[test]
     fn windows_service_plan_prefers_tensorrt_before_cuda_and_directml() {
-        let planned = planned_provider_kinds(
-            &RuntimeConfig::builder()
-                .provider_policy(crate::config::ProviderPolicy::Service)
-                .build()
-                .unwrap(),
-        );
+        with_force_provider_env(None, || {
+            let planned = planned_provider_kinds(
+                &RuntimeConfig::builder()
+                    .provider_policy(crate::config::ProviderPolicy::Service)
+                    .build()
+                    .unwrap(),
+            );
 
-        assert_eq!(
-            planned,
-            vec![
-                ExecutionProviderKind::TensorRt,
-                ExecutionProviderKind::Cuda,
-                ExecutionProviderKind::DirectMl,
-                ExecutionProviderKind::Cpu,
-            ]
-        );
+            assert_eq!(
+                planned,
+                vec![
+                    ExecutionProviderKind::TensorRt,
+                    ExecutionProviderKind::Cuda,
+                    ExecutionProviderKind::DirectMl,
+                    ExecutionProviderKind::Cpu,
+                ]
+            );
+        });
     }
 
     #[cfg(target_vendor = "apple")]
     #[test]
     fn apple_auto_plan_keeps_coreml_before_cpu() {
-        let planned = planned_provider_kinds(&RuntimeConfig::default());
-        assert_eq!(planned.last(), Some(&ExecutionProviderKind::Cpu));
-        assert!(planned.contains(&ExecutionProviderKind::CoreMl));
+        with_force_provider_env(None, || {
+            let planned = planned_provider_kinds(&RuntimeConfig::default());
+            assert_eq!(planned.last(), Some(&ExecutionProviderKind::Cpu));
+            assert!(planned.contains(&ExecutionProviderKind::CoreMl));
+        });
     }
 }
