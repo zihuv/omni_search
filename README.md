@@ -34,6 +34,9 @@ Quickstart:
 - set `OMNI_DEVICE` to `auto`, `cpu`, or `gpu` to control execution provider selection; default is `auto`;
 - set `OMNI_PROVIDER_POLICY` to `auto`, `interactive`, or `service` when you want to change GPU provider priority without pinning a single provider;
 - call `sdk.runtime_snapshot()` when you need to inspect or display the current execution provider state;
+- set `OMNI_ORT_DYLIB_PATH` when you build with `runtime-dynamic` and want to point `omni_search` at a specific `onnxruntime.dll` / `.so` / `.dylib`;
+- set `OMNI_ORT_PROVIDER_DIR`, `OMNI_CUDA_BIN_DIR`, `OMNI_CUDNN_BIN_DIR`, and `OMNI_TENSORRT_LIB_DIR` when you need `omni_search` to preload or register NVIDIA provider libraries from explicit directories;
+- set `OMNI_PRELOAD_RUNTIME_LIBRARIES=false` when you want to disable eager runtime DLL preloading while still keeping the path hints in config;
 - the default `RuntimeConfig::intra_threads` value also resolves to the host physical core count;
 - set `OMNI_INTRA_THREADS` to `auto` or a positive integer to override the ONNX Runtime intra-op thread count; `auto` resolves to the host physical core count;
 - set `OMNI_INTER_THREADS` to a positive integer when you need to override the ONNX Runtime inter-op thread count while benchmarking or tuning;
@@ -53,8 +56,9 @@ OMNI_SAMPLES_DIR=samples
 Device selection notes:
 
 - all current model families load standard ONNX graphs, so GPU support is determined by the ONNX Runtime execution provider rather than by a model-specific code path;
-- the default build keeps Windows `DirectML` and Apple `CoreML` enabled;
+- the default build is `runtime-bundled + directml + coreml`, which keeps Windows `DirectML` and Apple `CoreML` enabled while still using the bundled ONNX Runtime loading mode;
 - enable `cargo build --features nvidia` when you want `TensorRT -> CUDA` ahead of the platform fallback provider on supported Windows/Linux x64 targets;
+- build with `cargo build --no-default-features --features runtime-dynamic,directml,nvidia` when you want a Windows/NVIDIA variant that uses system-provided ONNX Runtime, CUDA, cuDNN, and TensorRT libraries instead of bundling them into the application;
 - `OMNI_PROVIDER_POLICY=service` prefers steady-state throughput and currently tries `TensorRT -> CUDA -> DirectML -> CPU` on Windows with `--features nvidia`;
 - `OMNI_PROVIDER_POLICY=interactive` prefers lower warmup cost and currently tries `CUDA -> DirectML -> TensorRT -> CPU` on Windows with `--features nvidia`;
 - `OMNI_FORCE_PROVIDER` remains available as a diagnostics-only override when you need to pin one execution provider for benchmarking or debugging;
@@ -62,6 +66,7 @@ Device selection notes:
 - on Linux, the current crate build does not yet wire a GPU provider; AMD GPU support would require a dedicated ROCm or WebGPU path;
 - `auto` first tries the configured GPU chain and falls back to CPU if acceleration is unavailable;
 - `gpu` requires at least one GPU execution provider to register successfully; it does not silently fall back to CPU;
+- `runtime_snapshot()` now separates `compiled_providers`, `planned_providers`, `registered_providers`, and `issues`, so upper layers can distinguish feature-gated providers from missing runtime libraries or dependency-chain failures;
 - the Windows build output includes `DirectML.dll`; application packaging should ship that file with the executable.
 
 Legacy migration:
@@ -93,6 +98,10 @@ let sdk = OmniSearch::builder()
     .from_local_model_dir("D:/models/fgclip2_flat")
     .device(RuntimeDevice::Auto)
     .provider_policy(ProviderPolicy::Service)
+    .provider_dir("D:/onnxruntime/lib")
+    .cuda_bin_dir("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.6/bin")
+    .cudnn_bin_dir("D:/runtime/cudnn/bin")
+    .tensorrt_lib_dir("D:/runtime/tensorrt/lib")
     .intra_threads(4)
     .fgclip_max_patches(256)
     .session_policy(SessionPolicy::SingleActive)
@@ -102,4 +111,6 @@ let sdk = OmniSearch::builder()
 let snapshot = sdk.runtime_snapshot();
 println!("mode: {:?}", snapshot.summary.mode);
 println!("provider: {:?}", snapshot.summary.effective_provider);
+println!("compiled: {:?}", snapshot.text_session.compiled_providers);
+println!("issues: {:?}", snapshot.text_session.issues);
 ```

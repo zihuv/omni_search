@@ -3,11 +3,12 @@ use std::time::Instant;
 
 use serde::Serialize;
 
-use crate::backend::{EmbeddingBackend, create_backend};
+use crate::backend::{EmbeddingBackend, create_backend, planned_runtime_profiles_snapshot};
 use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{
     GraphOptimizationLevel, ModelConfig, ModelFamily, ProviderPolicy, RuntimeConfig,
-    RuntimeConfigBuilder, RuntimeDevice, SessionPolicy,
+    RuntimeConfigBuilder, RuntimeDevice, RuntimeLibraryConfig, RuntimeLibraryConfigOverride,
+    RuntimeProfileKind, SessionPolicy,
 };
 use crate::embedding::Embedding;
 use crate::error::Error;
@@ -32,11 +33,30 @@ pub struct RuntimeSnapshot {
 pub struct RuntimeConfigSnapshot {
     pub requested_device: RuntimeDevice,
     pub provider_policy: ProviderPolicy,
+    pub library: RuntimeLibraryConfigSnapshot,
+    pub planned_profiles: Vec<RuntimePlanProfileSnapshot>,
     pub intra_threads: usize,
     pub inter_threads: Option<usize>,
     pub fgclip_max_patches: Option<usize>,
     pub session_policy: SessionPolicy,
     pub graph_optimization_level: GraphOptimizationLevel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RuntimeLibraryConfigSnapshot {
+    pub ort_dylib_path: Option<PathBuf>,
+    pub provider_dir: Option<PathBuf>,
+    pub cuda_bin_dir: Option<PathBuf>,
+    pub cudnn_bin_dir: Option<PathBuf>,
+    pub tensorrt_lib_dir: Option<PathBuf>,
+    pub preload: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RuntimePlanProfileSnapshot {
+    pub kind: RuntimeProfileKind,
+    pub providers: Vec<ExecutionProviderKind>,
+    pub library: RuntimeLibraryConfigSnapshot,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -49,12 +69,15 @@ pub struct RuntimeSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct SessionRuntimeSnapshot {
     pub loaded: bool,
+    pub compiled_providers: Vec<ExecutionProviderKind>,
     pub planned_providers: Vec<ExecutionProviderKind>,
+    pub selected_profile: Option<RuntimeProfileKind>,
     pub provider_attempts: Vec<ProviderAttempt>,
     pub registered_providers: Vec<ExecutionProviderKind>,
     pub effective_provider: Option<ExecutionProviderKind>,
     pub mode: RuntimeMode,
     pub fallback_to_cpu: bool,
+    pub issues: Vec<RuntimeIssue>,
     pub last_error: Option<RuntimeIssue>,
     pub last_loaded_at_unix_ms: Option<u64>,
     pub last_used_at_unix_ms: Option<u64>,
@@ -84,6 +107,13 @@ pub struct RuntimeIssue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeIssueCode {
+    ProviderNotCompiled,
+    ProviderUnsupportedByRuntimeLibrary,
+    ProviderLibraryIncompatible,
+    RuntimeLibraryMissing,
+    RuntimeLibraryConfigurationUnsupported,
+    ProviderLibraryMissing,
+    DependencyLibraryMissing,
     GpuExecutionUnavailable,
     ProviderRegistrationFailed,
     SessionBuildFailed,
@@ -118,6 +148,28 @@ impl ExecutionProviderKind {
     pub fn is_gpu(self) -> bool {
         !self.is_cpu()
     }
+}
+
+pub(crate) fn looks_like_missing_dependency(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("module could not be found")
+        || message.contains("specified module could not be found")
+        || message.contains("loadlibrary failed")
+        || message.contains("dlopen")
+        || message.contains("cannot open shared object file")
+        || message.contains("image not found")
+}
+
+pub(crate) fn looks_like_provider_unsupported_by_runtime_library(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("specified provider is not supported")
+}
+
+pub(crate) fn looks_like_provider_library_incompatible(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("createepfactories")
+        || message.contains("failed to find symbol createepfactories")
+        || message.contains("entry point could not be located")
 }
 
 pub struct OmniSearch {
@@ -162,6 +214,105 @@ impl OmniSearchBuilder {
 
     pub fn runtime_config(&mut self, runtime: RuntimeConfig) -> &mut Self {
         self.runtime = RuntimeConfigBuilder::from_config(runtime);
+        self
+    }
+
+    pub fn runtime_library_config(&mut self, val: RuntimeLibraryConfig) -> &mut Self {
+        self.runtime.runtime_library_config(val);
+        self
+    }
+
+    pub fn nvidia_runtime_library_config(
+        &mut self,
+        val: RuntimeLibraryConfigOverride,
+    ) -> &mut Self {
+        self.runtime.nvidia_runtime_library_config(val);
+        self
+    }
+
+    pub fn clear_nvidia_runtime_library_config(&mut self) -> &mut Self {
+        self.runtime.clear_nvidia_runtime_library_config();
+        self
+    }
+
+    pub fn directml_runtime_library_config(
+        &mut self,
+        val: RuntimeLibraryConfigOverride,
+    ) -> &mut Self {
+        self.runtime.directml_runtime_library_config(val);
+        self
+    }
+
+    pub fn clear_directml_runtime_library_config(&mut self) -> &mut Self {
+        self.runtime.clear_directml_runtime_library_config();
+        self
+    }
+
+    pub fn coreml_runtime_library_config(
+        &mut self,
+        val: RuntimeLibraryConfigOverride,
+    ) -> &mut Self {
+        self.runtime.coreml_runtime_library_config(val);
+        self
+    }
+
+    pub fn clear_coreml_runtime_library_config(&mut self) -> &mut Self {
+        self.runtime.clear_coreml_runtime_library_config();
+        self
+    }
+
+    pub fn ort_dylib_path(&mut self, val: impl Into<PathBuf>) -> &mut Self {
+        self.runtime.ort_dylib_path(val);
+        self
+    }
+
+    pub fn clear_ort_dylib_path(&mut self) -> &mut Self {
+        self.runtime.clear_ort_dylib_path();
+        self
+    }
+
+    pub fn provider_dir(&mut self, val: impl Into<PathBuf>) -> &mut Self {
+        self.runtime.provider_dir(val);
+        self
+    }
+
+    pub fn clear_provider_dir(&mut self) -> &mut Self {
+        self.runtime.clear_provider_dir();
+        self
+    }
+
+    pub fn cuda_bin_dir(&mut self, val: impl Into<PathBuf>) -> &mut Self {
+        self.runtime.cuda_bin_dir(val);
+        self
+    }
+
+    pub fn clear_cuda_bin_dir(&mut self) -> &mut Self {
+        self.runtime.clear_cuda_bin_dir();
+        self
+    }
+
+    pub fn cudnn_bin_dir(&mut self, val: impl Into<PathBuf>) -> &mut Self {
+        self.runtime.cudnn_bin_dir(val);
+        self
+    }
+
+    pub fn clear_cudnn_bin_dir(&mut self) -> &mut Self {
+        self.runtime.clear_cudnn_bin_dir();
+        self
+    }
+
+    pub fn tensorrt_lib_dir(&mut self, val: impl Into<PathBuf>) -> &mut Self {
+        self.runtime.tensorrt_lib_dir(val);
+        self
+    }
+
+    pub fn clear_tensorrt_lib_dir(&mut self) -> &mut Self {
+        self.runtime.clear_tensorrt_lib_dir();
+        self
+    }
+
+    pub fn preload_runtime_libraries(&mut self, val: bool) -> &mut Self {
+        self.runtime.preload_runtime_libraries(val);
         self
     }
 
@@ -323,11 +474,30 @@ impl RuntimeConfigSnapshot {
         Self {
             requested_device: config.device,
             provider_policy: config.provider_policy,
+            library: RuntimeLibraryConfigSnapshot::from_runtime_config(config),
+            planned_profiles: planned_runtime_profiles_snapshot(config),
             intra_threads: config.intra_threads,
             inter_threads: config.inter_threads,
             fgclip_max_patches: config.fgclip_max_patches,
             session_policy: config.session_policy,
             graph_optimization_level: config.graph_optimization_level,
+        }
+    }
+}
+
+impl RuntimeLibraryConfigSnapshot {
+    pub(crate) fn from_runtime_config(config: &RuntimeConfig) -> Self {
+        Self::from_library_config(&config.library)
+    }
+
+    pub(crate) fn from_library_config(config: &RuntimeLibraryConfig) -> Self {
+        Self {
+            ort_dylib_path: config.ort_dylib_path.clone(),
+            provider_dir: config.provider_dir.clone(),
+            cuda_bin_dir: config.cuda_bin_dir.clone(),
+            cudnn_bin_dir: config.cudnn_bin_dir.clone(),
+            tensorrt_lib_dir: config.tensorrt_lib_dir.clone(),
+            preload: config.preload,
         }
     }
 }
@@ -341,7 +511,10 @@ impl SessionRuntimeSnapshot {
                 None => RuntimeMode::Unknown,
                 _ => RuntimeMode::Unknown,
             }
-        } else if self.last_error.is_some() || !self.provider_attempts.is_empty() {
+        } else if self.last_error.is_some()
+            || !self.issues.is_empty()
+            || !self.provider_attempts.is_empty()
+        {
             RuntimeMode::Unknown
         } else {
             RuntimeMode::Uninitialized
@@ -422,6 +595,8 @@ fn summarize_runtime(
             "text_session={:?}, image_session={:?}",
             text_session.effective_provider, image_session.effective_provider
         ))
+    } else if effective_provider.is_some_and(|provider| provider.is_gpu()) {
+        None
     } else {
         [text_session, image_session]
             .into_iter()
@@ -443,7 +618,8 @@ fn summarize_runtime(
 mod tests {
     use super::{
         ExecutionProviderKind, OmniSearch, ProviderAttempt, ProviderAttemptState, RuntimeIssue,
-        RuntimeIssueCode, RuntimeMode, SessionRuntimeSnapshot, summarize_runtime,
+        RuntimeIssueCode, RuntimeMode, RuntimeProfileKind, SessionRuntimeSnapshot,
+        summarize_runtime,
     };
 
     #[test]
@@ -460,7 +636,9 @@ mod tests {
     fn summarize_runtime_reports_mixed_when_sessions_use_different_providers() {
         let text = SessionRuntimeSnapshot {
             loaded: true,
+            compiled_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
             planned_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
+            selected_profile: Some(RuntimeProfileKind::DirectMl),
             provider_attempts: vec![ProviderAttempt {
                 provider: ExecutionProviderKind::DirectMl,
                 state: ProviderAttemptState::Registered,
@@ -470,13 +648,16 @@ mod tests {
             effective_provider: Some(ExecutionProviderKind::DirectMl),
             mode: RuntimeMode::GpuEnabled,
             fallback_to_cpu: false,
+            issues: Vec::new(),
             last_error: None,
             last_loaded_at_unix_ms: Some(1),
             last_used_at_unix_ms: Some(2),
         };
         let image = SessionRuntimeSnapshot {
             loaded: true,
+            compiled_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
             planned_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
+            selected_profile: Some(RuntimeProfileKind::Cpu),
             provider_attempts: vec![ProviderAttempt {
                 provider: ExecutionProviderKind::Cpu,
                 state: ProviderAttemptState::Registered,
@@ -486,6 +667,11 @@ mod tests {
             effective_provider: Some(ExecutionProviderKind::Cpu),
             mode: RuntimeMode::CpuOnly,
             fallback_to_cpu: true,
+            issues: vec![RuntimeIssue {
+                code: RuntimeIssueCode::ProviderRegistrationFailed,
+                message: String::from("DirectML failed"),
+                at_unix_ms: 3,
+            }],
             last_error: Some(RuntimeIssue {
                 code: RuntimeIssueCode::ProviderRegistrationFailed,
                 message: String::from("DirectML failed"),
@@ -506,7 +692,9 @@ mod tests {
     fn session_mode_is_unknown_after_failed_load() {
         let snapshot = SessionRuntimeSnapshot {
             loaded: false,
+            compiled_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
             planned_providers: vec![ExecutionProviderKind::DirectMl, ExecutionProviderKind::Cpu],
+            selected_profile: None,
             provider_attempts: vec![ProviderAttempt {
                 provider: ExecutionProviderKind::DirectMl,
                 state: ProviderAttemptState::Failed,
@@ -516,6 +704,11 @@ mod tests {
             effective_provider: None,
             mode: RuntimeMode::Unknown,
             fallback_to_cpu: false,
+            issues: vec![RuntimeIssue {
+                code: RuntimeIssueCode::SessionBuildFailed,
+                message: String::from("session creation failed"),
+                at_unix_ms: 10,
+            }],
             last_error: Some(RuntimeIssue {
                 code: RuntimeIssueCode::SessionBuildFailed,
                 message: String::from("session creation failed"),

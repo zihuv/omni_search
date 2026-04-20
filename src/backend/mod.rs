@@ -22,13 +22,18 @@ use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 use crate::bundle::{ModelBundle, ModelInfo};
 use crate::config::{
     GraphOptimizationLevel, ModelFamily, ProviderPolicy, RuntimeConfig, RuntimeDevice,
+    RuntimeLibraryConfig, RuntimeProfileKind,
 };
 use crate::embedding::Embedding;
 use crate::error::Error;
 use crate::runtime::{
     ExecutionProviderKind, ProviderAttempt, ProviderAttemptState, RuntimeIssue, RuntimeIssueCode,
-    RuntimeSnapshot, RuntimeState, SessionRuntimeSnapshot, build_runtime_snapshot,
+    RuntimeLibraryConfigSnapshot, RuntimePlanProfileSnapshot, RuntimeSnapshot, RuntimeState,
+    SessionRuntimeSnapshot, build_runtime_snapshot,
+    looks_like_missing_dependency, looks_like_provider_library_incompatible,
+    looks_like_provider_unsupported_by_runtime_library,
 };
+use crate::runtime_loader::prepare_runtime_libraries;
 
 const FORCE_PROVIDER_ENV: &str = "OMNI_FORCE_PROVIDER";
 
@@ -69,18 +74,22 @@ pub(crate) struct LazySession {
 
 struct SessionState {
     session: Option<Session>,
+    selected_profile: Option<RuntimeProfileKind>,
     last_used_at: Option<Instant>,
     last_used_at_unix_ms: Option<u64>,
     last_loaded_at_unix_ms: Option<u64>,
     provider_attempts: Vec<ProviderAttempt>,
     registered_providers: Vec<ExecutionProviderKind>,
+    issues: Vec<RuntimeIssue>,
     last_error: Option<RuntimeIssue>,
 }
 
 struct SessionLoadSuccess {
     session: Session,
+    selected_profile: RuntimeProfileKind,
     provider_attempts: Vec<ProviderAttempt>,
     registered_providers: Vec<ExecutionProviderKind>,
+    issues: Vec<RuntimeIssue>,
     loaded_at_unix_ms: u64,
 }
 
@@ -88,7 +97,14 @@ struct SessionLoadFailure {
     error: Error,
     provider_attempts: Vec<ProviderAttempt>,
     registered_providers: Vec<ExecutionProviderKind>,
-    issue: RuntimeIssue,
+    issues: Vec<RuntimeIssue>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeProfilePlan {
+    kind: RuntimeProfileKind,
+    providers: Vec<ExecutionProviderKind>,
+    library: RuntimeLibraryConfig,
 }
 
 impl LazySession {
@@ -98,11 +114,13 @@ impl LazySession {
             runtime,
             state: Mutex::new(SessionState {
                 session: None,
+                selected_profile: None,
                 last_used_at: None,
                 last_used_at_unix_ms: None,
                 last_loaded_at_unix_ms: None,
                 provider_attempts: Vec::new(),
                 registered_providers: Vec::new(),
+                issues: Vec::new(),
                 last_error: None,
             }),
         }
@@ -137,11 +155,13 @@ impl LazySession {
                 Ok(result)
             }
             Err(error) => {
-                state.last_error = Some(RuntimeIssue {
+                let issue = RuntimeIssue {
                     code: RuntimeIssueCode::InferenceFailed,
                     message: error.to_string(),
                     at_unix_ms: now_unix_ms(),
-                });
+                };
+                state.issues.push(issue.clone());
+                state.last_error = Some(issue);
                 Err(error)
             }
         }
@@ -175,6 +195,7 @@ impl LazySession {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let compiled_providers = compiled_provider_kinds();
         let planned_providers = planned_provider_kinds(&self.runtime);
         let loaded = state.session.is_some();
         let effective_provider = if loaded {
@@ -184,7 +205,9 @@ impl LazySession {
         };
         let mut snapshot = SessionRuntimeSnapshot {
             loaded,
+            compiled_providers,
             planned_providers: planned_providers.clone(),
+            selected_profile: state.selected_profile,
             provider_attempts: state.provider_attempts.clone(),
             registered_providers: state.registered_providers.clone(),
             effective_provider,
@@ -193,6 +216,7 @@ impl LazySession {
                 && self.runtime.device != RuntimeDevice::Cpu
                 && planned_providers.iter().any(|provider| provider.is_gpu())
                 && effective_provider == Some(ExecutionProviderKind::Cpu),
+            issues: state.issues.clone(),
             last_error: state.last_error.clone(),
             last_loaded_at_unix_ms: state.last_loaded_at_unix_ms,
             last_used_at_unix_ms: state.last_used_at_unix_ms,
@@ -205,17 +229,21 @@ impl LazySession {
         match load_session(&self.model_path, &self.runtime) {
             Ok(loaded) => {
                 state.session = Some(loaded.session);
+                state.selected_profile = Some(loaded.selected_profile);
                 state.provider_attempts = loaded.provider_attempts;
                 state.registered_providers = loaded.registered_providers;
+                state.issues = loaded.issues;
                 state.last_loaded_at_unix_ms = Some(loaded.loaded_at_unix_ms);
-                state.last_error = None;
+                state.last_error = state.issues.last().cloned();
                 Ok(())
             }
             Err(failure) => {
                 state.session = None;
+                state.selected_profile = None;
                 state.provider_attempts = failure.provider_attempts;
                 state.registered_providers = failure.registered_providers;
-                state.last_error = Some(failure.issue);
+                state.issues = failure.issues;
+                state.last_error = state.issues.last().cloned();
                 Err(failure.error)
             }
         }
@@ -406,50 +434,139 @@ fn load_session(
     model_path: &Path,
     runtime: &RuntimeConfig,
 ) -> Result<SessionLoadSuccess, SessionLoadFailure> {
+    let profiles = resolve_runtime_profile_plans(runtime)
+        .unwrap_or_else(|_| runtime_profile_plans(runtime.device, runtime.provider_policy, runtime));
+    if runtime.device == RuntimeDevice::Gpu && profiles.is_empty() {
+        return Err(session_load_failure(
+            Error::ort(
+                "gpu execution is not configured for this platform in the current build; enable the matching provider features (`directml`, `coreml`, or `nvidia`) for this target",
+            ),
+            Vec::new(),
+            Vec::new(),
+            RuntimeIssueCode::ProviderNotCompiled,
+            Vec::new(),
+        ));
+    }
+
+    let mut aggregated_issues = Vec::new();
+    let mut last_failure: Option<SessionLoadFailure> = None;
+    let mut profile_errors = Vec::new();
+
+    for profile in profiles {
+        match load_session_for_profile(model_path, runtime, &profile) {
+            Ok(mut success) => {
+                if !aggregated_issues.is_empty() {
+                    let mut issues = aggregated_issues;
+                    issues.extend(success.issues);
+                    success.issues = issues;
+                }
+                return Ok(success);
+            }
+            Err(failure) => {
+                aggregated_issues.extend(failure.issues.clone());
+                profile_errors.push(format!("{}: {}", profile.kind, failure.error));
+                last_failure = Some(failure);
+            }
+        }
+    }
+
+    if let Some(mut failure) = last_failure {
+        failure.issues = aggregated_issues;
+        failure.error = Error::ort(format!(
+            "failed to load ONNX model {} with all planned runtime profiles: {}",
+            model_path.display(),
+            profile_errors.join("; ")
+        ));
+        return Err(failure);
+    }
+
+    Err(session_load_failure(
+        Error::ort(format!(
+            "failed to load ONNX model {}: no runtime profile could be planned",
+            model_path.display()
+        )),
+        Vec::new(),
+        Vec::new(),
+        RuntimeIssueCode::ProviderNotCompiled,
+        Vec::new(),
+    ))
+}
+
+fn load_session_for_profile(
+    model_path: &Path,
+    runtime: &RuntimeConfig,
+    profile: &RuntimeProfilePlan,
+) -> Result<SessionLoadSuccess, SessionLoadFailure> {
+    let runtime_library_issues =
+        prepare_runtime_libraries(&profile.library, &profile.providers)
+            .map_err(|failure| SessionLoadFailure {
+                error: failure.error,
+                provider_attempts: Vec::new(),
+                registered_providers: Vec::new(),
+                issues: annotate_profile_issues(profile.kind, failure.issues),
+            })?
+            .issues;
     let mut builder = Session::builder()
         .map_err(Error::from_ort)
         .map_err(|error| {
-            session_load_failure(
-                error,
-                Vec::new(),
-                Vec::new(),
-                RuntimeIssueCode::SessionBuildFailed,
+            annotate_profile_failure(
+                profile.kind,
+                session_load_failure(
+                    error,
+                    Vec::new(),
+                    Vec::new(),
+                    RuntimeIssueCode::SessionBuildFailed,
+                    runtime_library_issues.clone(),
+                ),
             )
         })?;
     builder = builder
         .with_no_environment_execution_providers()
         .map_err(Error::from_ort)
         .map_err(|error| {
-            session_load_failure(
-                error,
-                Vec::new(),
-                Vec::new(),
-                RuntimeIssueCode::SessionBuildFailed,
+            annotate_profile_failure(
+                profile.kind,
+                session_load_failure(
+                    error,
+                    Vec::new(),
+                    Vec::new(),
+                    RuntimeIssueCode::SessionBuildFailed,
+                    runtime_library_issues.clone(),
+                ),
             )
         })?;
-    let provider_state = configure_execution_providers(&mut builder, runtime)?;
+    let provider_state =
+        configure_execution_providers(&mut builder, runtime, profile, runtime_library_issues)?;
     builder = builder
         .with_optimization_level(map_graph_optimization_level(
             runtime.graph_optimization_level,
         ))
         .map_err(Error::from_ort)
         .map_err(|error| {
-            session_load_failure(
-                error,
-                provider_state.provider_attempts.clone(),
-                provider_state.registered_providers.clone(),
-                RuntimeIssueCode::SessionBuildFailed,
+            annotate_profile_failure(
+                profile.kind,
+                session_load_failure(
+                    error,
+                    provider_state.provider_attempts.clone(),
+                    provider_state.registered_providers.clone(),
+                    RuntimeIssueCode::SessionBuildFailed,
+                    provider_state.issues.clone(),
+                ),
             )
         })?;
     builder = builder
         .with_intra_threads(runtime.intra_threads)
         .map_err(Error::from_ort)
         .map_err(|error| {
-            session_load_failure(
-                error,
-                provider_state.provider_attempts.clone(),
-                provider_state.registered_providers.clone(),
-                RuntimeIssueCode::SessionBuildFailed,
+            annotate_profile_failure(
+                profile.kind,
+                session_load_failure(
+                    error,
+                    provider_state.provider_attempts.clone(),
+                    provider_state.registered_providers.clone(),
+                    RuntimeIssueCode::SessionBuildFailed,
+                    provider_state.issues.clone(),
+                ),
             )
         })?;
     if let Some(inter_threads) = runtime.inter_threads {
@@ -457,85 +574,116 @@ fn load_session(
             .with_inter_threads(inter_threads)
             .map_err(Error::from_ort)
             .map_err(|error| {
-                session_load_failure(
-                    error,
-                    provider_state.provider_attempts.clone(),
-                    provider_state.registered_providers.clone(),
-                    RuntimeIssueCode::SessionBuildFailed,
+                annotate_profile_failure(
+                    profile.kind,
+                    session_load_failure(
+                        error,
+                        provider_state.provider_attempts.clone(),
+                        provider_state.registered_providers.clone(),
+                        RuntimeIssueCode::SessionBuildFailed,
+                        provider_state.issues.clone(),
+                    ),
                 )
             })?;
     }
     let session = builder.commit_from_file(model_path).map_err(|error| {
-        session_load_failure(
-            Error::ort(format!(
-                "failed to load ONNX model {}: {error}",
-                model_path.display()
-            )),
-            provider_state.provider_attempts.clone(),
-            provider_state.registered_providers.clone(),
-            RuntimeIssueCode::SessionBuildFailed,
+        annotate_profile_failure(
+            profile.kind,
+            session_load_failure(
+                Error::ort(format!(
+                    "failed to load ONNX model {}: {error}",
+                    model_path.display()
+                )),
+                provider_state.provider_attempts.clone(),
+                provider_state.registered_providers.clone(),
+                RuntimeIssueCode::SessionBuildFailed,
+                provider_state.issues.clone(),
+            ),
         )
     })?;
     Ok(SessionLoadSuccess {
         session,
+        selected_profile: profile.kind,
         provider_attempts: provider_state.provider_attempts,
         registered_providers: provider_state.registered_providers,
+        issues: provider_state.issues,
         loaded_at_unix_ms: now_unix_ms(),
     })
+}
+
+fn annotate_profile_issues(
+    profile: RuntimeProfileKind,
+    issues: Vec<RuntimeIssue>,
+) -> Vec<RuntimeIssue> {
+    issues
+        .into_iter()
+        .map(|mut issue| {
+            issue.message = format!("[{profile}] {}", issue.message);
+            issue
+        })
+        .collect()
+}
+
+fn annotate_profile_failure(
+    profile: RuntimeProfileKind,
+    mut failure: SessionLoadFailure,
+) -> SessionLoadFailure {
+    failure.issues = annotate_profile_issues(profile, failure.issues);
+    failure
 }
 
 #[derive(Clone, Debug)]
 struct ProviderState {
     provider_attempts: Vec<ProviderAttempt>,
     registered_providers: Vec<ExecutionProviderKind>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct ProviderSpec {
-    kind: ExecutionProviderKind,
+    issues: Vec<RuntimeIssue>,
 }
 
 fn configure_execution_providers(
     builder: &mut SessionBuilder,
     runtime: &RuntimeConfig,
+    profile: &RuntimeProfilePlan,
+    mut issues: Vec<RuntimeIssue>,
 ) -> Result<ProviderState, SessionLoadFailure> {
-    let provider_specs = resolve_execution_provider_specs(runtime).map_err(|error| {
-        session_load_failure(
-            error,
-            Vec::new(),
-            Vec::new(),
-            RuntimeIssueCode::ProviderRegistrationFailed,
-        )
-    })?;
-    if runtime.device == RuntimeDevice::Gpu && provider_specs.is_empty() {
-        return Err(session_load_failure(
-            Error::ort(
-                "gpu execution is not configured for this platform in the current build; enable the `nvidia` feature for TensorRT/CUDA on supported Windows/Linux x64 targets, use DirectML on Windows, or CoreML on Apple platforms",
+    if runtime.device == RuntimeDevice::Gpu && profile.providers.is_empty() {
+        return Err(annotate_profile_failure(
+            profile.kind,
+            session_load_failure(
+                Error::ort(
+                    "gpu execution is not configured for this platform in the current build; enable the matching provider features (`directml`, `coreml`, or `nvidia`) for this target",
+                ),
+                Vec::new(),
+                Vec::new(),
+                RuntimeIssueCode::ProviderNotCompiled,
+                issues,
             ),
-            Vec::new(),
-            Vec::new(),
-            RuntimeIssueCode::GpuExecutionUnavailable,
         ));
     }
 
-    let mut provider_attempts = Vec::with_capacity(provider_specs.len());
+    let mut provider_attempts = Vec::with_capacity(profile.providers.len());
     let mut registered_providers = Vec::new();
-    for provider in provider_specs {
-        match register_provider(builder, provider.kind) {
+    for provider in &profile.providers {
+        match register_provider(builder, *provider) {
             Ok(()) => {
                 provider_attempts.push(ProviderAttempt {
-                    provider: provider.kind,
+                    provider: *provider,
                     state: ProviderAttemptState::Registered,
                     detail: None,
                 });
-                registered_providers.push(provider.kind);
+                registered_providers.push(*provider);
             }
             Err(error) => {
                 provider_attempts.push(ProviderAttempt {
-                    provider: provider.kind,
+                    provider: *provider,
                     state: ProviderAttemptState::Failed,
                     detail: Some(error.to_string()),
                 });
+                issues.push(provider_registration_issue(
+                    runtime,
+                    profile.kind,
+                    *provider,
+                    error.to_string(),
+                ));
             }
         }
     }
@@ -545,144 +693,213 @@ fn configure_execution_providers(
             .iter()
             .any(|provider| provider.is_gpu())
     {
-        return Err(session_load_failure(
-            Error::ort(format!(
-                "gpu execution requested, but no GPU execution provider could be registered: {}",
-                format_provider_attempts(&provider_attempts)
-            )),
-            provider_attempts,
-            registered_providers,
-            RuntimeIssueCode::GpuExecutionUnavailable,
+        return Err(annotate_profile_failure(
+            profile.kind,
+            session_load_failure(
+                Error::ort(format!(
+                    "gpu execution requested, but no GPU execution provider could be registered: {}",
+                    format_provider_attempts(&provider_attempts)
+                )),
+                provider_attempts,
+                registered_providers,
+                RuntimeIssueCode::GpuExecutionUnavailable,
+                issues,
+            ),
         ));
     }
 
     if registered_providers.is_empty() {
-        return Err(session_load_failure(
-            Error::ort(format!(
-                "no execution provider could be registered: {}",
-                format_provider_attempts(&provider_attempts)
-            )),
-            provider_attempts,
-            registered_providers,
-            RuntimeIssueCode::ProviderRegistrationFailed,
+        return Err(annotate_profile_failure(
+            profile.kind,
+            session_load_failure(
+                Error::ort(format!(
+                    "no execution provider could be registered: {}",
+                    format_provider_attempts(&provider_attempts)
+                )),
+                provider_attempts,
+                registered_providers,
+                RuntimeIssueCode::ProviderRegistrationFailed,
+                issues,
+            ),
         ));
     }
 
     Ok(ProviderState {
         provider_attempts,
         registered_providers,
+        issues,
     })
 }
 
-fn execution_provider_specs(device: RuntimeDevice, policy: ProviderPolicy) -> Vec<ProviderSpec> {
-    let mut providers = Vec::new();
-    match device {
-        RuntimeDevice::Cpu => {
-            providers.push(ProviderSpec {
-                kind: ExecutionProviderKind::Cpu,
-            });
-        }
-        RuntimeDevice::Auto => {
-            append_platform_gpu_providers(&mut providers, policy);
-            providers.push(ProviderSpec {
-                kind: ExecutionProviderKind::Cpu,
-            });
-        }
-        RuntimeDevice::Gpu => {
-            append_platform_gpu_providers(&mut providers, policy);
-        }
-    }
-    providers
-}
-
-fn planned_provider_kinds(runtime: &RuntimeConfig) -> Vec<ExecutionProviderKind> {
-    resolve_execution_provider_specs(runtime)
-        .unwrap_or_else(|_| execution_provider_specs(runtime.device, runtime.provider_policy))
+pub(crate) fn planned_runtime_profiles_snapshot(
+    runtime: &RuntimeConfig,
+) -> Vec<RuntimePlanProfileSnapshot> {
+    resolve_runtime_profile_plans(runtime)
+        .unwrap_or_else(|_| runtime_profile_plans(runtime.device, runtime.provider_policy, runtime))
         .into_iter()
-        .map(|provider| provider.kind)
+        .map(|profile| RuntimePlanProfileSnapshot {
+            kind: profile.kind,
+            providers: profile.providers,
+            library: RuntimeLibraryConfigSnapshot::from_library_config(&profile.library),
+        })
         .collect()
 }
 
-fn resolve_execution_provider_specs(runtime: &RuntimeConfig) -> Result<Vec<ProviderSpec>, Error> {
+fn planned_provider_kinds(runtime: &RuntimeConfig) -> Vec<ExecutionProviderKind> {
+    resolve_runtime_profile_plans(runtime)
+        .unwrap_or_else(|_| runtime_profile_plans(runtime.device, runtime.provider_policy, runtime))
+        .into_iter()
+        .flat_map(|profile| profile.providers)
+        .collect()
+}
+
+fn resolve_runtime_profile_plans(runtime: &RuntimeConfig) -> Result<Vec<RuntimeProfilePlan>, Error> {
     if let Some(provider) = forced_execution_provider_from_env()? {
-        return Ok(vec![ProviderSpec { kind: provider }]);
+        let profile = provider_runtime_profile(provider);
+        return Ok(vec![RuntimeProfilePlan {
+            kind: profile,
+            providers: vec![provider],
+            library: runtime.resolved_library_for_profile(profile),
+        }]);
     }
-    Ok(execution_provider_specs(
+    Ok(runtime_profile_plans(
         runtime.device,
         runtime.provider_policy,
+        runtime,
     ))
 }
 
-fn append_platform_gpu_providers(providers: &mut Vec<ProviderSpec>, policy: ProviderPolicy) {
-    for kind in platform_gpu_provider_kinds(policy) {
-        providers.push(ProviderSpec { kind });
+fn runtime_profile_plans(
+    device: RuntimeDevice,
+    policy: ProviderPolicy,
+    runtime: &RuntimeConfig,
+) -> Vec<RuntimeProfilePlan> {
+    let mut profiles = Vec::new();
+    match device {
+        RuntimeDevice::Cpu => {
+            profiles.push(runtime_profile_plan(
+                RuntimeProfileKind::Cpu,
+                vec![ExecutionProviderKind::Cpu],
+                runtime,
+            ));
+        }
+        RuntimeDevice::Auto => {
+            append_platform_gpu_profiles(&mut profiles, policy, runtime);
+            profiles.push(runtime_profile_plan(
+                RuntimeProfileKind::Cpu,
+                vec![ExecutionProviderKind::Cpu],
+                runtime,
+            ));
+        }
+        RuntimeDevice::Gpu => {
+            append_platform_gpu_profiles(&mut profiles, policy, runtime);
+        }
+    }
+    profiles
+}
+
+fn runtime_profile_plan(
+    kind: RuntimeProfileKind,
+    providers: Vec<ExecutionProviderKind>,
+    runtime: &RuntimeConfig,
+) -> RuntimeProfilePlan {
+    RuntimeProfilePlan {
+        kind,
+        providers,
+        library: runtime.resolved_library_for_profile(kind),
     }
 }
 
-fn platform_gpu_provider_kinds(policy: ProviderPolicy) -> Vec<ExecutionProviderKind> {
-    let mut providers = Vec::new();
-
+fn append_platform_gpu_profiles(
+    profiles: &mut Vec<RuntimeProfilePlan>,
+    policy: ProviderPolicy,
+    runtime: &RuntimeConfig,
+) {
     match policy {
-        ProviderPolicy::Auto | ProviderPolicy::Service => {
-            push_service_gpu_providers(&mut providers);
+        ProviderPolicy::Auto | ProviderPolicy::Interactive => {
+            push_interactive_gpu_profiles(profiles, runtime);
         }
-        ProviderPolicy::Interactive => {
-            push_interactive_gpu_providers(&mut providers);
+        ProviderPolicy::Service => {
+            push_service_gpu_profiles(profiles, runtime);
         }
-    }
-
-    providers
-}
-
-fn push_service_gpu_providers(providers: &mut Vec<ExecutionProviderKind>) {
-    #[cfg(all(
-        feature = "nvidia",
-        target_arch = "x86_64",
-        any(target_os = "windows", target_os = "linux")
-    ))]
-    {
-        providers.push(ExecutionProviderKind::TensorRt);
-        providers.push(ExecutionProviderKind::Cuda);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        providers.push(ExecutionProviderKind::DirectMl);
-    }
-
-    #[cfg(target_vendor = "apple")]
-    {
-        providers.push(ExecutionProviderKind::CoreMl);
     }
 }
 
-fn push_interactive_gpu_providers(providers: &mut Vec<ExecutionProviderKind>) {
+fn push_service_gpu_profiles(profiles: &mut Vec<RuntimeProfilePlan>, runtime: &RuntimeConfig) {
     #[cfg(all(
         feature = "nvidia",
         target_arch = "x86_64",
         any(target_os = "windows", target_os = "linux")
     ))]
     {
-        providers.push(ExecutionProviderKind::Cuda);
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::Nvidia,
+            vec![ExecutionProviderKind::TensorRt, ExecutionProviderKind::Cuda],
+            runtime,
+        ));
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(feature = "directml", target_os = "windows"))]
     {
-        providers.push(ExecutionProviderKind::DirectMl);
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::DirectMl,
+            vec![ExecutionProviderKind::DirectMl],
+            runtime,
+        ));
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(feature = "coreml", target_vendor = "apple"))]
     {
-        providers.push(ExecutionProviderKind::CoreMl);
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::CoreMl,
+            vec![ExecutionProviderKind::CoreMl],
+            runtime,
+        ));
     }
+}
 
+fn push_interactive_gpu_profiles(
+    profiles: &mut Vec<RuntimeProfilePlan>,
+    runtime: &RuntimeConfig,
+) {
     #[cfg(all(
         feature = "nvidia",
         target_arch = "x86_64",
         any(target_os = "windows", target_os = "linux")
     ))]
     {
-        providers.push(ExecutionProviderKind::TensorRt);
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::Nvidia,
+            vec![ExecutionProviderKind::Cuda],
+            runtime,
+        ));
+    }
+
+    #[cfg(all(feature = "directml", target_os = "windows"))]
+    {
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::DirectMl,
+            vec![ExecutionProviderKind::DirectMl],
+            runtime,
+        ));
+    }
+
+    #[cfg(all(feature = "coreml", target_vendor = "apple"))]
+    {
+        profiles.push(runtime_profile_plan(
+            RuntimeProfileKind::CoreMl,
+            vec![ExecutionProviderKind::CoreMl],
+            runtime,
+        ));
+    }
+}
+
+fn provider_runtime_profile(provider: ExecutionProviderKind) -> RuntimeProfileKind {
+    match provider {
+        ExecutionProviderKind::TensorRt | ExecutionProviderKind::Cuda => RuntimeProfileKind::Nvidia,
+        ExecutionProviderKind::DirectMl => RuntimeProfileKind::DirectMl,
+        ExecutionProviderKind::CoreMl => RuntimeProfileKind::CoreMl,
+        ExecutionProviderKind::Cpu => RuntimeProfileKind::Cpu,
     }
 }
 
@@ -727,10 +944,28 @@ fn provider_supported_on_current_build(provider: ExecutionProviderKind) -> bool 
             target_arch = "x86_64",
             any(target_os = "windows", target_os = "linux")
         )),
-        ExecutionProviderKind::DirectMl => cfg!(target_os = "windows"),
-        ExecutionProviderKind::CoreMl => cfg!(target_vendor = "apple"),
+        ExecutionProviderKind::DirectMl => cfg!(all(feature = "directml", target_os = "windows")),
+        ExecutionProviderKind::CoreMl => {
+            cfg!(all(feature = "coreml", target_vendor = "apple"))
+        }
         ExecutionProviderKind::Cpu => true,
     }
+}
+
+fn compiled_provider_kinds() -> Vec<ExecutionProviderKind> {
+    let mut providers = Vec::new();
+    for provider in [
+        ExecutionProviderKind::TensorRt,
+        ExecutionProviderKind::Cuda,
+        ExecutionProviderKind::DirectMl,
+        ExecutionProviderKind::CoreMl,
+        ExecutionProviderKind::Cpu,
+    ] {
+        if provider_supported_on_current_build(provider) {
+            providers.push(provider);
+        }
+    }
+    providers
 }
 
 fn register_provider(
@@ -756,6 +991,63 @@ fn register_provider(
     }
 }
 
+fn provider_registration_issue(
+    runtime: &RuntimeConfig,
+    profile: RuntimeProfileKind,
+    provider: ExecutionProviderKind,
+    message: String,
+) -> RuntimeIssue {
+    let library = runtime.resolved_library_for_profile(profile);
+    let code = if !provider_supported_on_current_build(provider) {
+        RuntimeIssueCode::ProviderNotCompiled
+    } else if provider_library_expected_but_missing(&library, provider) {
+        RuntimeIssueCode::ProviderLibraryMissing
+    } else if looks_like_provider_unsupported_by_runtime_library(&message) {
+        RuntimeIssueCode::ProviderUnsupportedByRuntimeLibrary
+    } else if looks_like_provider_library_incompatible(&message) {
+        RuntimeIssueCode::ProviderLibraryIncompatible
+    } else if looks_like_missing_dependency(&message) {
+        RuntimeIssueCode::DependencyLibraryMissing
+    } else {
+        RuntimeIssueCode::ProviderRegistrationFailed
+    };
+
+    RuntimeIssue {
+        code,
+        message: format!("failed to register {provider:?} in {profile} profile: {message}"),
+        at_unix_ms: now_unix_ms(),
+    }
+}
+
+fn provider_library_expected_but_missing(
+    library: &RuntimeLibraryConfig,
+    provider: ExecutionProviderKind,
+) -> bool {
+    let Some(provider_dir) = library.provider_dir.as_ref() else {
+        return false;
+    };
+    let Some(library_name) = provider_library_name(provider) else {
+        return false;
+    };
+    !provider_dir.join(library_name).is_file()
+}
+
+fn provider_library_name(provider: ExecutionProviderKind) -> Option<&'static str> {
+    match provider {
+        #[cfg(target_os = "windows")]
+        ExecutionProviderKind::TensorRt => Some("onnxruntime_providers_tensorrt.dll"),
+        #[cfg(not(target_os = "windows"))]
+        ExecutionProviderKind::TensorRt => Some("libonnxruntime_providers_tensorrt.so"),
+        #[cfg(target_os = "windows")]
+        ExecutionProviderKind::Cuda => Some("onnxruntime_providers_cuda.dll"),
+        #[cfg(not(target_os = "windows"))]
+        ExecutionProviderKind::Cuda => Some("libonnxruntime_providers_cuda.so"),
+        ExecutionProviderKind::DirectMl
+        | ExecutionProviderKind::CoreMl
+        | ExecutionProviderKind::Cpu => None,
+    }
+}
+
 fn format_provider_attempts(provider_attempts: &[ProviderAttempt]) -> String {
     if provider_attempts.is_empty() {
         return String::from("no providers were planned");
@@ -775,16 +1067,18 @@ fn session_load_failure(
     provider_attempts: Vec<ProviderAttempt>,
     registered_providers: Vec<ExecutionProviderKind>,
     code: RuntimeIssueCode,
+    mut issues: Vec<RuntimeIssue>,
 ) -> SessionLoadFailure {
+    issues.push(RuntimeIssue {
+        code,
+        message: error.to_string(),
+        at_unix_ms: now_unix_ms(),
+    });
     SessionLoadFailure {
-        issue: RuntimeIssue {
-            code,
-            message: error.to_string(),
-            at_unix_ms: now_unix_ms(),
-        },
         error,
         provider_attempts,
         registered_providers,
+        issues,
     }
 }
 
@@ -887,7 +1181,7 @@ mod tests {
         });
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "directml"))]
     #[test]
     fn force_provider_env_overrides_default_plan() {
         with_force_provider_env(Some("directml"), || {
@@ -896,7 +1190,7 @@ mod tests {
         });
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(all(target_os = "windows", feature = "directml"))]
     #[test]
     fn windows_auto_plan_keeps_directml_before_cpu() {
         with_force_provider_env(None, || {
@@ -906,9 +1200,9 @@ mod tests {
         });
     }
 
-    #[cfg(all(target_os = "windows", feature = "nvidia"))]
+    #[cfg(all(target_os = "windows", feature = "nvidia", feature = "directml"))]
     #[test]
-    fn windows_interactive_plan_prefers_cuda_and_directml_before_tensorrt() {
+    fn windows_interactive_plan_prefers_cuda_and_directml_before_cpu() {
         with_force_provider_env(None, || {
             let planned = planned_provider_kinds(
                 &RuntimeConfig::builder()
@@ -922,14 +1216,30 @@ mod tests {
                 vec![
                     ExecutionProviderKind::Cuda,
                     ExecutionProviderKind::DirectMl,
-                    ExecutionProviderKind::TensorRt,
                     ExecutionProviderKind::Cpu,
                 ]
             );
         });
     }
 
-    #[cfg(all(target_os = "windows", feature = "nvidia"))]
+    #[cfg(all(target_os = "windows", feature = "nvidia", feature = "directml"))]
+    #[test]
+    fn windows_auto_plan_matches_interactive_profile_order() {
+        with_force_provider_env(None, || {
+            let planned = planned_provider_kinds(&RuntimeConfig::default());
+
+            assert_eq!(
+                planned,
+                vec![
+                    ExecutionProviderKind::Cuda,
+                    ExecutionProviderKind::DirectMl,
+                    ExecutionProviderKind::Cpu,
+                ]
+            );
+        });
+    }
+
+    #[cfg(all(target_os = "windows", feature = "nvidia", feature = "directml"))]
     #[test]
     fn windows_service_plan_prefers_tensorrt_before_cuda_and_directml() {
         with_force_provider_env(None, || {
@@ -952,7 +1262,7 @@ mod tests {
         });
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "coreml"))]
     #[test]
     fn apple_auto_plan_keeps_coreml_before_cpu() {
         with_force_provider_env(None, || {
@@ -960,5 +1270,35 @@ mod tests {
             assert_eq!(planned.last(), Some(&ExecutionProviderKind::Cpu));
             assert!(planned.contains(&ExecutionProviderKind::CoreMl));
         });
+    }
+
+    #[test]
+    fn provider_registration_issue_marks_runtime_unsupported_errors() {
+        let issue = super::provider_registration_issue(
+            &RuntimeConfig::default(),
+            crate::config::RuntimeProfileKind::Cpu,
+            ExecutionProviderKind::Cpu,
+            String::from("Specified provider is not supported."),
+        );
+
+        assert_eq!(
+            issue.code,
+            super::RuntimeIssueCode::ProviderUnsupportedByRuntimeLibrary
+        );
+    }
+
+    #[test]
+    fn provider_registration_issue_marks_incompatible_provider_libraries() {
+        let issue = super::provider_registration_issue(
+            &RuntimeConfig::default(),
+            crate::config::RuntimeProfileKind::Cpu,
+            ExecutionProviderKind::Cpu,
+            String::from("Failed to find symbol CreateEpFactories in library, error code: 127"),
+        );
+
+        assert_eq!(
+            issue.code,
+            super::RuntimeIssueCode::ProviderLibraryIncompatible
+        );
     }
 }

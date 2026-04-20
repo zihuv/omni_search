@@ -53,6 +53,11 @@ function Get-ManifestPath {
     return (Join-Path $repoRoot "Cargo.toml")
 }
 
+function Get-ChangelogPath {
+    $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
+    return (Join-Path $repoRoot "docs/CHANGELOG.md")
+}
+
 function Get-PackageVersion {
     param(
         [Parameter(Mandatory = $true)]
@@ -95,6 +100,121 @@ function Set-PackageVersion {
 
     $encoding = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($ManifestPath, $updated, $encoding)
+}
+
+function Update-ChangelogForRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ChangelogPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if (-not (Test-Path -LiteralPath $ChangelogPath)) {
+        throw "CHANGELOG.md not found at $ChangelogPath."
+    }
+
+    $content = Get-Content $ChangelogPath -Raw
+    $newline = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $normalized = $content -replace "`r`n", "`n"
+
+    $unreleasedMatch = [regex]::Match($normalized, '(?m)^## \[Unreleased\]\s*$')
+    if (-not $unreleasedMatch.Success) {
+        throw "docs/CHANGELOG.md is missing the ## [Unreleased] section."
+    }
+
+    $unreleasedBodyStart = $unreleasedMatch.Index + $unreleasedMatch.Length
+    $afterUnreleased = $normalized.Substring($unreleasedBodyStart)
+    $nextSectionMatch = [regex]::Match($afterUnreleased, '(?m)^## \[')
+
+    if ($nextSectionMatch.Success) {
+        $unreleasedBody = $afterUnreleased.Substring(0, $nextSectionMatch.Index)
+        $remainingSections = $afterUnreleased.Substring($nextSectionMatch.Index)
+    }
+    else {
+        $unreleasedBody = $afterUnreleased
+        $remainingSections = ""
+    }
+
+    $categories = @("Added", "Changed", "Deprecated", "Removed", "Fixed", "Security")
+    $categoryPattern = '(?ms)^### (?<name>Added|Changed|Deprecated|Removed|Fixed|Security)[ \t]*$\n?(?<body>.*?)(?=^### (?:Added|Changed|Deprecated|Removed|Fixed|Security)[ \t]*$|\z)'
+    $categoryBodies = @{}
+    foreach ($category in $categories) {
+        $categoryBodies[$category] = ""
+    }
+
+    $trimmedUnreleasedBody = $unreleasedBody.Trim("`n")
+    foreach ($match in [regex]::Matches($trimmedUnreleasedBody, $categoryPattern)) {
+        $categoryBodies[$match.Groups["name"].Value] = $match.Groups["body"].Value.Trim()
+    }
+
+    $unsupportedContent = [regex]::Replace($trimmedUnreleasedBody, $categoryPattern, "").Trim()
+    if (-not [string]::IsNullOrWhiteSpace($unsupportedContent)) {
+        throw "docs/CHANGELOG.md contains unsupported content under Unreleased. Only standard category sections are supported."
+    }
+
+    $releaseBlocks = New-Object System.Collections.Generic.List[string]
+    foreach ($category in $categories) {
+        $body = $categoryBodies[$category]
+        if (-not [string]::IsNullOrWhiteSpace($body)) {
+            $releaseBlocks.Add("### $category`n`n$body")
+        }
+    }
+
+    if ($releaseBlocks.Count -eq 0) {
+        throw "docs/CHANGELOG.md does not contain any Unreleased entries to release."
+    }
+
+    $releaseDate = Get-Date -Format "yyyy-MM-dd"
+    $emptyUnreleased = @(
+        "## [Unreleased]",
+        "",
+        "### Added",
+        "",
+        "### Changed",
+        "",
+        "### Deprecated",
+        "",
+        "### Removed",
+        "",
+        "### Fixed",
+        "",
+        "### Security"
+    ) -join "`n"
+
+    $releaseSection = @(
+        "## [$Version] - $releaseDate",
+        "",
+        ($releaseBlocks -join "`n`n")
+    ) -join "`n"
+
+    $prefix = $normalized.Substring(0, $unreleasedMatch.Index)
+    $updated = @(
+        $prefix.TrimEnd("`n"),
+        "",
+        $emptyUnreleased,
+        "",
+        $releaseSection
+    ) -join "`n"
+
+    if (-not [string]::IsNullOrWhiteSpace($remainingSections)) {
+        $updated = @(
+            $updated.TrimEnd("`n"),
+            "",
+            $remainingSections.TrimStart("`n")
+        ) -join "`n"
+    }
+
+    if ($content.EndsWith("`r`n")) {
+        $updated = $updated.TrimEnd("`n") + "`n"
+    }
+    elseif ($content.EndsWith("`n")) {
+        $updated = $updated.TrimEnd("`n") + "`n"
+    }
+
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    [System.IO.File]::WriteAllText($ChangelogPath, ($updated -replace "`n", $newline), $encoding)
 }
 
 function Assert-CleanWorktree {
@@ -147,6 +267,7 @@ if ($SkipPublish -and -not $SkipPush) {
 }
 
 $manifestPath = Get-ManifestPath
+$changelogPath = Get-ChangelogPath
 $repoRoot = Split-Path $manifestPath -Parent
 Set-Location $repoRoot
 
@@ -165,11 +286,13 @@ $branch = Get-CurrentBranch
 
 Write-Host "Updating Cargo.toml version: $currentVersion -> $Version"
 Set-PackageVersion -ManifestPath $manifestPath -NewVersion $Version
+Write-Host "Updating docs/CHANGELOG.md for release $Version"
+Update-ChangelogForRelease -ChangelogPath $changelogPath -Version $Version
 
 Invoke-External cargo @("test")
 Invoke-External cargo @("publish", "--dry-run", "--locked", "--allow-dirty")
 
-Invoke-External git @("add", "Cargo.toml", "Cargo.lock")
+Invoke-External git @("add", "Cargo.toml", "Cargo.lock", "docs/CHANGELOG.md")
 Invoke-External git @("commit", "-m", $Version)
 
 if (-not $SkipPublish) {

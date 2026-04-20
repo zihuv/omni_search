@@ -13,8 +13,12 @@ keywords = ["embedding", "multimodal", "onnx", "search", "ort"]
 categories = ["api-bindings", "computer-vision"]
 
 [features]
-default = []
+default = ["runtime-bundled", "directml", "coreml"]
+directml = ["ort/directml"]
+coreml = ["ort/coreml"]
 nvidia = ["ort/cuda", "ort/tensorrt"]
+runtime-bundled = ["ort/download-binaries", "ort/copy-dylibs", "ort/tls-native"]
+runtime-dynamic = ["ort/load-dynamic"]
 
 [dependencies]
 dotenvy = "0.15.7"
@@ -22,7 +26,7 @@ image = { version = "0.25", default-features = false, features = ["bmp", "jpeg",
 memmap2 = "0.9"
 ndarray = "0.17"
 num_cpus = "1.17"
-ort = { version = "2.0.0-rc.12", features = ["coreml", "directml"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "api-24", "preload-dylibs"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
