@@ -281,12 +281,6 @@ impl RuntimeLibraryConfig {
         validate_optional_path("runtime.library.cudnn_bin_dir", &self.cudnn_bin_dir)?;
         validate_optional_path("runtime.library.tensorrt_lib_dir", &self.tensorrt_lib_dir)?;
 
-        if self.ort_dylib_path.is_some() && !cfg!(feature = "runtime-dynamic") {
-            return Err(Error::invalid_config(
-                "runtime.library.ort_dylib_path requires the `runtime-dynamic` crate feature",
-            ));
-        }
-
         Ok(())
     }
 }
@@ -351,12 +345,6 @@ impl RuntimeLibraryConfigOverride {
             &format!("{prefix}.tensorrt_lib_dir"),
             &self.tensorrt_lib_dir,
         )?;
-
-        if self.ort_dylib_path.is_some() && !cfg!(feature = "runtime-dynamic") {
-            return Err(Error::invalid_config(format!(
-                "{prefix}.ort_dylib_path requires the `runtime-dynamic` crate feature"
-            )));
-        }
 
         Ok(())
     }
