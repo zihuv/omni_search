@@ -8,8 +8,6 @@
 
 ### Added
 
-- 新增可选 `avif` crate feature；启用后，CLI 样本扫描与图片路径嵌入可识别 `.avif` 文件。
-
 ### Changed
 
 ### Deprecated
@@ -18,9 +16,17 @@
 
 ### Fixed
 
-- 默认构建不再因为缺少 `pkg-config` 或 `dav1d` 而在 Windows 上阻塞 `cargo test` 与发布流程。
-
 ### Security
+
+## [0.2.6] - 2026-04-20
+
+### Added
+
+- 新增可选 `avif` crate feature；启用后，CLI 样本扫描与图片路径嵌入可识别 `.avif` 文件。
+
+### Fixed
+
+- 默认构建不再因为缺少 `pkg-config` 或 `dav1d` 而在 Windows 上阻塞 `cargo test` 与发布流程。
 
 ## [0.2.5] - 2026-04-20
 
