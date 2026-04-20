@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use omni_search::{
-    ModelBundle, OmniSearch, RuntimeConfig, env_path_resolved, load_dotenv_from,
-    runtime_config_from_env,
+    ModelBundle, OmniSearch, RuntimeConfig, env_path_resolved, is_supported_image_path,
+    load_dotenv_from, runtime_config_from_env,
 };
 use serde::Serialize;
 
@@ -207,18 +207,7 @@ fn list_images(root: &Path) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> 
     let mut images = fs::read_dir(root)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| {
-                        matches!(
-                            ext.to_ascii_lowercase().as_str(),
-                            "jpg" | "jpeg" | "png" | "webp" | "bmp"
-                        )
-                    })
-        })
+        .filter(|path| path.is_file() && is_supported_image_path(path))
         .collect::<Vec<_>>();
     images.sort();
     if images.is_empty() {

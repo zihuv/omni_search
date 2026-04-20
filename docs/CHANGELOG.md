@@ -8,6 +8,7 @@
 
 ### Added
 
+- 新增 AVIF 图片读取支持，CLI 样本扫描与图片路径嵌入现在可识别 `.avif` 文件。
 ### Changed
 
 ### Deprecated

@@ -60,4 +60,19 @@ mod tests {
         assert_eq!(decoded.width(), 3);
         assert_eq!(decoded.height(), 2);
     }
+
+    #[test]
+    fn decodes_avif_bytes_from_png_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("mislabeled.png");
+        let image = sample_image();
+        let mut bytes = Cursor::new(Vec::new());
+
+        image.write_to(&mut bytes, ImageFormat::Avif).unwrap();
+        fs::write(&path, bytes.into_inner()).unwrap();
+
+        let decoded = load_image_from_path(&path).unwrap();
+        assert_eq!(decoded.width(), 3);
+        assert_eq!(decoded.height(), 2);
+    }
 }

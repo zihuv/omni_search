@@ -24,9 +24,7 @@ struct GlobalRuntimeLibraryState {
 
 enum RuntimeLibraryStatus {
     Pending,
-    Ready {
-        issues: Vec<RuntimeIssue>,
-    },
+    Ready { issues: Vec<RuntimeIssue> },
 }
 
 static RUNTIME_LIBRARY_STATE: Mutex<GlobalRuntimeLibraryState> =
@@ -457,12 +455,9 @@ mod tests {
     fn ort_dylib_path_requires_runtime_dynamic_at_loader_time() {
         let error = apply_ort_dylib_path(Path::new("D:/runtime/onnxruntime.dll")).unwrap_err();
 
-        assert!(
-            error
-                .error
-                .to_string()
-                .contains("runtime.library.ort_dylib_path requires the `runtime-dynamic` crate feature")
-        );
+        assert!(error.error.to_string().contains(
+            "runtime.library.ort_dylib_path requires the `runtime-dynamic` crate feature"
+        ));
         assert_eq!(
             error.issues.first().map(|issue| issue.code),
             Some(RuntimeIssueCode::RuntimeLibraryConfigurationUnsupported)

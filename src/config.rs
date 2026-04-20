@@ -667,13 +667,15 @@ impl RuntimeConfig {
         }
         self.library.validate()?;
         self.nvidia_library.validate("runtime.nvidia_library")?;
-        self.directml_library
-            .validate("runtime.directml_library")?;
+        self.directml_library.validate("runtime.directml_library")?;
         self.coreml_library.validate("runtime.coreml_library")?;
         Ok(())
     }
 
-    pub fn resolved_library_for_profile(&self, profile: RuntimeProfileKind) -> RuntimeLibraryConfig {
+    pub fn resolved_library_for_profile(
+        &self,
+        profile: RuntimeProfileKind,
+    ) -> RuntimeLibraryConfig {
         match profile {
             RuntimeProfileKind::Nvidia => self.nvidia_library.resolve(&self.library),
             RuntimeProfileKind::DirectMl => self.directml_library.resolve(&self.library),

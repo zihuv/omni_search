@@ -3,6 +3,7 @@ mod bundle;
 mod config;
 mod embedding;
 mod error;
+mod image_formats;
 mod manifest;
 mod preprocess;
 mod runtime;
@@ -19,6 +20,7 @@ pub use crate::config::{
 };
 pub use crate::embedding::Embedding;
 pub use crate::error::Error;
+pub use crate::image_formats::{SUPPORTED_IMAGE_EXTENSIONS, is_supported_image_path};
 pub use crate::runtime::{
     ExecutionProviderKind, OmniSearch, OmniSearchBuilder, ProviderAttempt, ProviderAttemptState,
     RuntimeConfigSnapshot, RuntimeIssue, RuntimeIssueCode, RuntimeLibraryConfigSnapshot,

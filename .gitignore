@@ -4,3 +4,4 @@
 /tmp/
 .env
 .env.local
+*.db

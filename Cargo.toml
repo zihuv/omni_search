@@ -22,7 +22,7 @@ runtime-dynamic = ["ort/load-dynamic"]
 
 [dependencies]
 dotenvy = "0.15.7"
-image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["avif", "avif-native", "bmp", "jpeg", "png", "webp"] }
 memmap2 = "0.9"
 ndarray = "0.17"
 num_cpus = "1.17"

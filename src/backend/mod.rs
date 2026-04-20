@@ -29,9 +29,8 @@ use crate::error::Error;
 use crate::runtime::{
     ExecutionProviderKind, ProviderAttempt, ProviderAttemptState, RuntimeIssue, RuntimeIssueCode,
     RuntimeLibraryConfigSnapshot, RuntimePlanProfileSnapshot, RuntimeSnapshot, RuntimeState,
-    SessionRuntimeSnapshot, build_runtime_snapshot,
-    looks_like_missing_dependency, looks_like_provider_library_incompatible,
-    looks_like_provider_unsupported_by_runtime_library,
+    SessionRuntimeSnapshot, build_runtime_snapshot, looks_like_missing_dependency,
+    looks_like_provider_library_incompatible, looks_like_provider_unsupported_by_runtime_library,
 };
 use crate::runtime_loader::prepare_runtime_libraries;
 
@@ -434,8 +433,9 @@ fn load_session(
     model_path: &Path,
     runtime: &RuntimeConfig,
 ) -> Result<SessionLoadSuccess, SessionLoadFailure> {
-    let profiles = resolve_runtime_profile_plans(runtime)
-        .unwrap_or_else(|_| runtime_profile_plans(runtime.device, runtime.provider_policy, runtime));
+    let profiles = resolve_runtime_profile_plans(runtime).unwrap_or_else(|_| {
+        runtime_profile_plans(runtime.device, runtime.provider_policy, runtime)
+    });
     if runtime.device == RuntimeDevice::Gpu && profiles.is_empty() {
         return Err(session_load_failure(
             Error::ort(
@@ -497,15 +497,14 @@ fn load_session_for_profile(
     runtime: &RuntimeConfig,
     profile: &RuntimeProfilePlan,
 ) -> Result<SessionLoadSuccess, SessionLoadFailure> {
-    let runtime_library_issues =
-        prepare_runtime_libraries(&profile.library, &profile.providers)
-            .map_err(|failure| SessionLoadFailure {
-                error: failure.error,
-                provider_attempts: Vec::new(),
-                registered_providers: Vec::new(),
-                issues: annotate_profile_issues(profile.kind, failure.issues),
-            })?
-            .issues;
+    let runtime_library_issues = prepare_runtime_libraries(&profile.library, &profile.providers)
+        .map_err(|failure| SessionLoadFailure {
+            error: failure.error,
+            provider_attempts: Vec::new(),
+            registered_providers: Vec::new(),
+            issues: annotate_profile_issues(profile.kind, failure.issues),
+        })?
+        .issues;
     let mut builder = Session::builder()
         .map_err(Error::from_ort)
         .map_err(|error| {
@@ -753,7 +752,9 @@ fn planned_provider_kinds(runtime: &RuntimeConfig) -> Vec<ExecutionProviderKind>
         .collect()
 }
 
-fn resolve_runtime_profile_plans(runtime: &RuntimeConfig) -> Result<Vec<RuntimeProfilePlan>, Error> {
+fn resolve_runtime_profile_plans(
+    runtime: &RuntimeConfig,
+) -> Result<Vec<RuntimeProfilePlan>, Error> {
     if let Some(provider) = forced_execution_provider_from_env()? {
         let profile = provider_runtime_profile(provider);
         return Ok(vec![RuntimeProfilePlan {
@@ -858,10 +859,7 @@ fn push_service_gpu_profiles(profiles: &mut Vec<RuntimeProfilePlan>, runtime: &R
     }
 }
 
-fn push_interactive_gpu_profiles(
-    profiles: &mut Vec<RuntimeProfilePlan>,
-    runtime: &RuntimeConfig,
-) {
+fn push_interactive_gpu_profiles(profiles: &mut Vec<RuntimeProfilePlan>, runtime: &RuntimeConfig) {
     #[cfg(all(
         feature = "nvidia",
         target_arch = "x86_64",

@@ -148,12 +148,9 @@ pub fn runtime_config_from_env() -> Result<RuntimeConfig, Error> {
     if let Some(preload) = env_bool("OMNI_PRELOAD_RUNTIME_LIBRARIES")? {
         builder.preload_runtime_libraries(preload);
     }
-    if let Some(config) = runtime_library_override_from_env(
-        "OMNI_NVIDIA",
-        &["OMNI_NVIDIA"],
-        true,
-        true,
-    )? {
+    if let Some(config) =
+        runtime_library_override_from_env("OMNI_NVIDIA", &["OMNI_NVIDIA"], true, true)?
+    {
         builder.nvidia_runtime_library_config(config);
     }
     if let Some(config) = runtime_library_override_from_env(
@@ -284,8 +281,7 @@ mod tests {
 
     use super::{
         default_intra_threads, env_bool, env_path_resolved, env_provider_policy,
-        parse_intra_threads, parse_positive_usize, physical_core_count,
-        runtime_config_from_env,
+        parse_intra_threads, parse_positive_usize, physical_core_count, runtime_config_from_env,
     };
     use crate::config::ProviderPolicy;
 
@@ -380,7 +376,10 @@ mod tests {
     #[test]
     fn runtime_config_from_env_reads_nvidia_runtime_override() {
         unsafe {
-            std::env::set_var("OMNI_NVIDIA_ORT_DYLIB_PATH", r"D:\runtime\nvidia\onnxruntime.dll");
+            std::env::set_var(
+                "OMNI_NVIDIA_ORT_DYLIB_PATH",
+                r"D:\runtime\nvidia\onnxruntime.dll",
+            );
             std::env::set_var("OMNI_NVIDIA_CUDA_BIN_DIR", r"D:\runtime\nvidia\cuda");
         }
 

@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use omni_search::{
-    ModelBundle, OmniSearch, env_path_resolved, load_dotenv_from, runtime_config_from_env, top_k,
+    ModelBundle, OmniSearch, env_path_resolved, is_supported_image_path, load_dotenv_from,
+    runtime_config_from_env, top_k,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -152,16 +153,7 @@ fn collect_images(
             collect_images(&path, images)?;
             continue;
         }
-        if path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "jpg" | "jpeg" | "png" | "webp" | "bmp"
-                )
-            })
-        {
+        if is_supported_image_path(&path) {
             images.push(path);
         }
     }

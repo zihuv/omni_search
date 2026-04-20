@@ -1,3 +1,5 @@
+> This library is not recommended for use and is currently under development.
+
 # omni_search
 
 `omni_search` is a Rust SDK for multimodal embedding and similarity search over local ONNX model directories.
@@ -25,7 +27,9 @@ Quickstart:
 
 - create a `.env` from `.env.example` or edit the existing local `.env` defaults when you want to pin a bundle, sample directory, or test fixtures;
 - set `OMNI_BUNDLE_DIR` to a local model directory that contains `model_config.json` plus flat root-level assets;
-- set `OMNI_SAMPLES_DIR` to a directory containing one or more `.jpg`, `.jpeg`, `.png`, `.webp`, or `.bmp` images;
+- set `OMNI_SAMPLES_DIR` to a directory containing one or more `.jpg`, `.jpeg`, `.png`, `.webp`, `.bmp`, or `.avif` images;
+- on Windows, AVIF decoding additionally requires a native `dav1d` library; provide it through `pkg-config` or set `SYSTEM_DEPS_DAV1D_NO_PKG_CONFIG=1`, `SYSTEM_DEPS_DAV1D_SEARCH_NATIVE`, and `SYSTEM_DEPS_DAV1D_LIB`;
+- see [docs/avif-setup.md](docs/avif-setup.md) for platform-specific AVIF setup on Windows, Linux, and macOS;
 - build SDK instances with `OmniSearch::builder()` when you only want to override part of the runtime config and keep the rest at defaults;
 - run `cargo run --bin omni_search --release` to scan all images in `OMNI_SAMPLES_DIR` with the default query `"山"`;
 - run `cargo run --bin omni_search --release -- "海边"` to scan all images with a custom query;
