@@ -17,6 +17,7 @@ use crate::manifest::{ImagePreprocessConfig, TextInputConfig};
 use crate::preprocess::clip_image::{
     ClipImagePreprocessConfig, preprocess_image, stack_image_batches,
 };
+use crate::preprocess::load_image_from_path;
 use crate::runtime::{RuntimeSnapshot, RuntimeState};
 
 pub(crate) struct OpenClipBackend {
@@ -195,8 +196,7 @@ impl EmbeddingBackend for OpenClipBackend {
 
     fn embed_image_path(&self, path: &Path) -> Result<Embedding, Error> {
         self.maybe_unload_text();
-        let image = image::open(path)
-            .map_err(|error| Error::image_preprocess(format!("{}: {error}", path.display())))?;
+        let image = load_image_from_path(path)?;
         single_embedding(self.encode_images_internal(&[image])?, "open clip image")
     }
 
@@ -214,11 +214,7 @@ impl EmbeddingBackend for OpenClipBackend {
         self.maybe_unload_text();
         let images = paths
             .iter()
-            .map(|path| {
-                image::open(path).map_err(|error| {
-                    Error::image_preprocess(format!("{}: {error}", path.display()))
-                })
-            })
+            .map(|path| load_image_from_path(path))
             .collect::<Result<Vec<_>, _>>()?;
         self.encode_images_internal(&images)
     }

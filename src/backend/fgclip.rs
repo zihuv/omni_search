@@ -21,6 +21,7 @@ use crate::preprocess::fgclip::{
     build_positional_embedding, determine_max_patches, preprocess_image, read_f32_file,
     stack_attention_masks, stack_f32_batches, stack_pixel_values,
 };
+use crate::preprocess::load_image_from_path;
 use crate::runtime::{RuntimeSnapshot, RuntimeState};
 
 pub(crate) struct FgClipBackend {
@@ -349,8 +350,7 @@ impl EmbeddingBackend for FgClipBackend {
 
     fn embed_image_path(&self, path: &Path) -> Result<Embedding, Error> {
         self.maybe_unload_text();
-        let image = image::open(path)
-            .map_err(|error| Error::image_preprocess(format!("{}: {error}", path.display())))?;
+        let image = load_image_from_path(path)?;
         single_embedding(self.encode_images_internal(&[image])?, "fgclip image")
     }
 
@@ -368,11 +368,7 @@ impl EmbeddingBackend for FgClipBackend {
         self.maybe_unload_text();
         let images = paths
             .iter()
-            .map(|path| {
-                image::open(path).map_err(|error| {
-                    Error::image_preprocess(format!("{}: {error}", path.display()))
-                })
-            })
+            .map(|path| load_image_from_path(path))
             .collect::<Result<Vec<_>, _>>()?;
         self.encode_images_internal(&images)
     }
