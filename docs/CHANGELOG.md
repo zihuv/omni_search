@@ -8,7 +8,8 @@
 
 ### Added
 
-- 新增 AVIF 图片读取支持，CLI 样本扫描与图片路径嵌入现在可识别 `.avif` 文件。
+- 新增可选 `avif` crate feature；启用后，CLI 样本扫描与图片路径嵌入可识别 `.avif` 文件。
+
 ### Changed
 
 ### Deprecated
@@ -16,6 +17,8 @@
 ### Removed
 
 ### Fixed
+
+- 默认构建不再因为缺少 `pkg-config` 或 `dav1d` 而在 Windows 上阻塞 `cargo test` 与发布流程。
 
 ### Security
 

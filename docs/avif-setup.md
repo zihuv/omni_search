@@ -1,13 +1,19 @@
 # AVIF Setup Guide
 
-本文档说明 `omni_search` 在不同平台上启用 AVIF 解码时需要安装的系统依赖。
+本文档说明 `omni_search` 在不同平台上启用可选 AVIF 解码支持时需要安装的系统依赖。
 
-当前仓库的 AVIF 支持来自 Rust `image` crate 的 `avif-native` 特性。这个特性会依赖：
+默认构建不会启用 AVIF。需要读取 `.avif` 图片时，请显式打开 crate feature：
+
+```bash
+cargo build --features avif
+```
+
+当前仓库的 `avif` feature 会透传 Rust `image` crate 的 `avif` 与 `avif-native` 特性。其中解码路径依赖：
 
 - `libdav1d` / `dav1d`
 - `pkg-config` 或兼容实现
 
-仅开启 `image` crate 的 `avif` 特性还不够。如果你需要在运行时读取 `.avif` 图片，当前项目使用的是 `avif-native` 路径。
+如果你需要在运行时读取 `.avif` 图片，除了启用 `--features avif` 之外，还需要满足下面的系统依赖。
 
 ## Requirements
 
@@ -32,7 +38,7 @@
 brew install dav1d pkgconf
 ```
 
-通常这就够了。若 `cargo build` 仍提示找不到 `dav1d`，补上：
+通常这就够了。若 `cargo build --features avif` 仍提示找不到 `dav1d`，补上：
 
 ```bash
 export PKG_CONFIG_PATH="$(brew --prefix dav1d)/lib/pkgconfig:$PKG_CONFIG_PATH"
@@ -43,7 +49,7 @@ export PKG_CONFIG_PATH="$(brew --prefix dav1d)/lib/pkgconfig:$PKG_CONFIG_PATH"
 ```bash
 pkg-config --modversion dav1d
 pkg-config --cflags --libs dav1d
-cargo test preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
+cargo test --features avif preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
 ```
 
 ## Linux
@@ -72,7 +78,7 @@ sudo pacman -S --needed dav1d pkgconf
 ```bash
 pkg-config --modversion dav1d
 pkg-config --cflags --libs dav1d
-cargo test preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
+cargo test --features avif preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
 ```
 
 ## Windows
@@ -163,30 +169,30 @@ $env:PATH = "C:\path\to\dav1d;$env:PATH"
 
 ```powershell
 pkg-config --modversion dav1d
-cargo test preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
+cargo test --features avif preprocess::image_path::tests::decodes_avif_bytes_from_png_path -- --exact
 ```
 
-如果你走的是手动覆盖路线，`pkg-config --modversion dav1d` 可以失败，但 `cargo test` 应该能通过。
+如果你走的是手动覆盖路线，`pkg-config --modversion dav1d` 可以失败，但 `cargo test --features avif` 应该能通过。
 
 ## Project Verification
 
 在当前仓库中，除了单元测试外，还可以直接用 CLI 验证真实图片：
 
 ```bash
-cargo run --bin omni_search -- "测试文本" "/absolute/path/to/example.avif"
+cargo run --features avif --bin omni_search -- "测试文本" "/absolute/path/to/example.avif"
 ```
 
 如果你想指定某个 bundle，例如 OpenCLIP / MobileCLIP2：
 
 ```bash
-OMNI_BUNDLE_DIR=models/mobileclip2 cargo run --bin omni_search -- "测试文本" "/absolute/path/to/example.avif"
+OMNI_BUNDLE_DIR=models/mobileclip2 cargo run --features avif --bin omni_search -- "测试文本" "/absolute/path/to/example.avif"
 ```
 
 Windows PowerShell 写法：
 
 ```powershell
 $env:OMNI_BUNDLE_DIR = 'models/mobileclip2'
-cargo run --bin omni_search -- "测试文本" "C:\path\to\example.avif"
+cargo run --features avif --bin omni_search -- "测试文本" "C:\path\to\example.avif"
 ```
 
 ## Troubleshooting

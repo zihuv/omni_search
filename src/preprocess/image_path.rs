@@ -61,6 +61,7 @@ mod tests {
         assert_eq!(decoded.height(), 2);
     }
 
+    #[cfg(feature = "avif")]
     #[test]
     fn decodes_avif_bytes_from_png_path() {
         let dir = tempdir().unwrap();
