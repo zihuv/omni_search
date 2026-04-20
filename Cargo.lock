@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "omni_search"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "dotenvy",
  "image",
